@@ -8,15 +8,17 @@ import 'package:rasp_shield/sdk/events/security_event_shipper.dart';
 import 'package:rasp_shield/sdk/lean_session.dart';
 import 'package:rasp_shield/sdk/security_controls.dart';
 
+import 'detector_catalog.dart';
 import 'detector_results_screen.dart';
 import 'geolocator_location_provider.dart';
+import 'threat_policy.dart';
 
 void main() {
   runApp(const RaspTrialApp());
 }
 
 /// Everything this trial app turns on. Detector ids are listed in the same
-/// order in detector_results_screen.dart (`trialDetectorIds`).
+/// order in detector_catalog.dart (`trialDetectorIds`).
 const trialConfig = RaspLeanConfig(
   // Original 4
   screenshotProtection: true,
@@ -135,6 +137,11 @@ class _SecurityDashboardState extends State<SecurityDashboard>
   RaspLeanState? _previousLeanState;
 
   final _clipboardTestController = TextEditingController();
+
+  /// Trial setting, off by default: close the app (after a 5 s countdown)
+  /// when USB debugging turns on. When off, developer options / ADB / USB
+  /// only show the warning banner. Not persisted — off again on restart.
+  bool _closeOnUsbDebugging = false;
 
   // ── Backend sync (RaspSecurityEventShipper) ───────────────────────────────
   //
@@ -298,15 +305,21 @@ class _SecurityDashboardState extends State<SecurityDashboard>
   // screen's very first reading (`previous == null`).
 
   void _reactToStateChange(RaspLeanState? previous, RaspLeanState current) {
-    final adbJustEnabled = current.usb.usbDebuggingEnabled == true &&
-        previous?.usb.usbDebuggingEnabled != true;
-    if (adbJustEnabled) {
+    // Developer options, USB debugging and USB connection are shown in the
+    // persistent warning banner (postureWarnings). Closing the app happens
+    // only when the trial setting is switched on.
+    if (shouldCloseApp(previous: previous, current: current, closeOnUsbDebugging: _closeOnUsbDebugging)) {
       _showThreatAndCloseApp(
         title: 'Developer Mode Detected',
         message: 'USB debugging is enabled on this device. For your '
             'security, please disable Developer Options in Settings.',
       );
       return; // app is closing — skip the lighter checks below
+    }
+
+    if (current.usb.usbDebuggingEnabled == true && previous != null &&
+        previous.usb.usbDebuggingEnabled != true) {
+      _showBanner('USB debugging (ADB) was turned on.');
     }
 
     if (current.usb.usbConnected == true && previous?.usb.usbConnected != true) {
@@ -329,10 +342,9 @@ class _SecurityDashboardState extends State<SecurityDashboard>
     );
   }
 
-  /// A dramatic response reserved for the one scenario the user explicitly
-  /// asked for: developer mode / USB debugging. Everything else above gets
-  /// only [_showBanner] — forcing the app closed on every minor detection
-  /// would train the user to ignore the warning entirely.
+  /// Closes the app after a countdown. Used only when the "close the app
+  /// when USB debugging turns on" trial setting is on (off by default);
+  /// otherwise developer mode / ADB / USB only produce warnings.
   void _showThreatAndCloseApp({required String title, required String message}) {
     if (!mounted) return;
     showDialog(
@@ -344,6 +356,7 @@ class _SecurityDashboardState extends State<SecurityDashboard>
 
   @override
   Widget build(BuildContext context) {
+    final warnings = postureWarnings(_state);
     return Scaffold(
       appBar: AppBar(
         title: const Text('RASP Shield — Lean Trial'),
@@ -369,6 +382,10 @@ class _SecurityDashboardState extends State<SecurityDashboard>
                 padding: const EdgeInsets.all(16),
                 children: [
                   _IntegrationBanner(status: _integrationStatus!),
+                  if (warnings.isNotEmpty) ...[
+                    const SizedBox(height: 12),
+                    _PostureWarningBanner(warnings: warnings),
+                  ],
                   const SizedBox(height: 16),
                   _BackendSyncCard(
                     configured: _shipperConfigured,
@@ -387,6 +404,9 @@ class _SecurityDashboardState extends State<SecurityDashboard>
                   _UsbCard(
                     usb: _state.usb,
                     onRefresh: () => _session?.refreshNow(),
+                    closeOnUsbDebugging: _closeOnUsbDebugging,
+                    onCloseOnUsbDebuggingChanged: (value) =>
+                        setState(() => _closeOnUsbDebugging = value),
                   ),
                   const SizedBox(height: 16),
                   _ClipboardCard(
@@ -413,15 +433,23 @@ class _StatusPill extends StatelessWidget {
   final String yesLabel;
   final String noLabel;
 
+  /// `true` for a protection that is on when "yes" (e.g. clipboard
+  /// guarding): yes shows green, no shows neutral grey. Default: yes is a
+  /// finding (red), no is fine (green).
+  final bool yesIsGood;
+
   const _StatusPill({
     required this.state,
     required this.yesLabel,
     required this.noLabel,
+    this.yesIsGood = false,
   });
 
   @override
   Widget build(BuildContext context) {
     final (Color color, IconData icon, String label) = switch (state) {
+      TriState.yes when yesIsGood => (Colors.green, Icons.check_circle, yesLabel),
+      TriState.no when yesIsGood => (Colors.grey, Icons.remove_circle_outline, noLabel),
       TriState.yes => (Colors.red, Icons.warning_amber_rounded, yesLabel),
       TriState.no => (Colors.green, Icons.check_circle, noLabel),
       TriState.unknown => (Colors.grey, Icons.help_outline, 'Unknown'),
@@ -506,6 +534,50 @@ class _IntegrationBanner extends StatelessWidget {
           Icon(Icons.verified_user, color: color),
           const SizedBox(width: 8),
           Expanded(child: Text(text, style: TextStyle(color: color))),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Device posture warning banner ────────────────────────────────────────────
+//
+// Shown while developer options, USB debugging or a USB connection is
+// detected. A warning only — the app keeps running (see threat_policy.dart).
+
+class _PostureWarningBanner extends StatelessWidget {
+  final List<String> warnings;
+  const _PostureWarningBanner({required this.warnings});
+
+  @override
+  Widget build(BuildContext context) {
+    final color = Colors.orange.shade800;
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: color),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(Icons.warning_amber_rounded, color: color),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Device warning', style: TextStyle(color: color, fontWeight: FontWeight.bold)),
+                for (final warning in warnings) Text(warning, style: TextStyle(color: color)),
+                const SizedBox(height: 4),
+                Text(
+                  'The app keeps running. Turn these off in Settings (or unplug USB) to clear this warning.',
+                  style: TextStyle(color: color, fontSize: 12),
+                ),
+              ],
+            ),
+          ),
         ],
       ),
     );
@@ -660,8 +732,15 @@ class _ScreenshotCard extends StatelessWidget {
 class _UsbCard extends StatelessWidget {
   final RaspUsbState usb;
   final VoidCallback onRefresh;
+  final bool closeOnUsbDebugging;
+  final ValueChanged<bool> onCloseOnUsbDebuggingChanged;
 
-  const _UsbCard({required this.usb, required this.onRefresh});
+  const _UsbCard({
+    required this.usb,
+    required this.onRefresh,
+    required this.closeOnUsbDebugging,
+    required this.onCloseOnUsbDebuggingChanged,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -719,6 +798,19 @@ class _UsbCard extends StatelessWidget {
           '(e.g. step-up auth, block transaction) when these fire.',
           style: TextStyle(fontSize: 12, fontStyle: FontStyle.italic),
         ),
+        const SizedBox(height: 8),
+        SwitchListTile(
+          key: const Key('close-on-usb-debugging'),
+          contentPadding: EdgeInsets.zero,
+          title: const Text('Close the app when USB debugging turns on'),
+          subtitle: const Text(
+            'Off by default. When off, developer options, ADB and USB only '
+            'show the warning banner. Applies the next time ADB turns on.',
+            style: TextStyle(fontSize: 12),
+          ),
+          value: closeOnUsbDebugging,
+          onChanged: onCloseOnUsbDebuggingChanged,
+        ),
       ],
     );
   }
@@ -756,6 +848,7 @@ class _ClipboardCard extends StatelessWidget {
               state: triFrom(active),
               yesLabel: 'Guarding',
               noLabel: 'Off',
+              yesIsGood: true,
             ),
             Switch(value: active ?? false, onChanged: onToggle),
           ],
@@ -867,9 +960,10 @@ class _ThreatCountdownDialogState extends State<_ThreatCountdownDialog> {
 // ── Extended detectors card ─────────────────────────────────────────────────
 //
 // Everything beyond the original 4 lean controls — real values from
-// `RaspLeanSession`'s `extendedDetectors` map, grouped by category the way
-// a real dashboard would show them. Nothing here is placeholder data: an
-// entry only appears once its detector has actually returned a result.
+// `RaspLeanSession`'s `extendedDetectors` map, with the same category
+// headings, order and names as the results screen (detector_catalog.dart).
+// Nothing here is placeholder data: an entry only appears once its detector
+// has actually returned a result.
 
 class _ExtendedDetectorsCard extends StatelessWidget {
   final Map<String, DetectionResult> detectors;
@@ -880,10 +974,6 @@ class _ExtendedDetectorsCard extends StatelessWidget {
   Widget build(BuildContext context) {
     if (detectors.isEmpty) return const SizedBox.shrink();
 
-    final byCategory = <String, List<DetectionResult>>{};
-    for (final result in detectors.values) {
-      byCategory.putIfAbsent(result.category.name, () => []).add(result);
-    }
     final threatCount = detectors.values.where((r) => r.status.isThreat).length;
 
     return _SectionCard(
@@ -900,35 +990,26 @@ class _ExtendedDetectorsCard extends StatelessWidget {
             fontSize: 13,
           ),
         ),
-        for (final entry in byCategory.entries) ...[
+        for (final (heading, ids) in groupByCategory(reportedDetectorIds(detectors.keys))) ...[
           Padding(
             padding: const EdgeInsets.only(top: 12, bottom: 4),
             child: Text(
-              _categoryLabel(entry.key),
+              heading,
               style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
             ),
           ),
-          for (final result in entry.value) _ExtendedDetectorRow(result: result),
+          for (final id in ids) _ExtendedDetectorRow(id: id, result: detectors[id]!),
         ],
       ],
     );
   }
-
-  /// `ThreatCategory` enum names are camelCase (e.g. `deviceIntegrity`) —
-  /// split into words and capitalize for display.
-  String _categoryLabel(String raw) {
-    final spaced = raw.replaceAllMapped(
-      RegExp(r'([a-z0-9])([A-Z])'),
-      (m) => '${m[1]} ${m[2]}',
-    );
-    return spaced.isEmpty ? spaced : spaced[0].toUpperCase() + spaced.substring(1);
-  }
 }
 
 class _ExtendedDetectorRow extends StatelessWidget {
+  final String id;
   final DetectionResult result;
 
-  const _ExtendedDetectorRow({required this.result});
+  const _ExtendedDetectorRow({required this.id, required this.result});
 
   @override
   Widget build(BuildContext context) {
@@ -952,7 +1033,7 @@ class _ExtendedDetectorRow extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  result.title,
+                  detectorName(id),
                   style: TextStyle(
                     fontWeight: threat ? FontWeight.bold : FontWeight.normal,
                     fontSize: 13,

@@ -3,7 +3,7 @@
 // Real: trialConfig.toNativeMap() (the map sent to the native plugin) and
 // trialDetectorIds. No platform channel involved.
 import 'package:flutter_test/flutter_test.dart';
-import 'package:rasp_trial/detector_results_screen.dart';
+import 'package:rasp_trial/detector_catalog.dart';
 import 'package:rasp_trial/main.dart';
 
 /// Native config key that enables each detector id.

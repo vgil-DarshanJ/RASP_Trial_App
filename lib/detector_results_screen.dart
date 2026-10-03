@@ -4,23 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:rasp_shield/sdk/core/core.dart' show DetectionResult, DetectionStatus;
 import 'package:rasp_shield/sdk/lean_session.dart';
 
-/// Detector ids this trial app turns on (see `trialConfig` in main.dart), in
-/// display order. A detector with no result yet is shown as "waiting".
-const trialDetectorIds = <String>[
-  // Device integrity
-  'root_jailbreak', 'emulator', 'device_binding', 'clone', 'developer_mode',
-  'device_lock_missing', 'secure_hardware_unavailable', 'device_fingerprint',
-  'device_state_attestation', 'sim_change', 'mock_location', 'time_spoofing',
-  // Runtime protection
-  'frida', 'debugger', 're_tools', 'hook_detection', 'risky_app', 'malware_reputation',
-  // App integrity
-  'tamper', 'untrusted_install_source', 'task_hijack',
-  // Network
-  'vpn', 'mitm', 'high_risk_ip', 'unsafe_wifi',
-  // Privacy & screen
-  'overlay', 'accessibility', 'external_display', 'screen_recording',
-  'vishing_call', 'third_party_keyboard',
-];
+import 'detector_catalog.dart';
+
 
 /// Every enabled detector with its current status, reason and full evidence,
 /// plus the evidence-envelope delivery counters — for reading results on a
@@ -66,8 +51,7 @@ class _DetectorResultsScreenState extends State<DetectorResultsScreen> {
   @override
   Widget build(BuildContext context) {
     final results = _state.extendedDetectors;
-    final extra = results.keys.where((id) => !trialDetectorIds.contains(id)).toList()..sort();
-    final ids = [...trialDetectorIds, ...extra];
+    final ids = displayedDetectorIds(results.keys);
     final counts = <DetectionStatus, int>{};
     for (final r in results.values) {
       counts[r.status] = (counts[r.status] ?? 0) + 1;
@@ -96,7 +80,13 @@ class _DetectorResultsScreenState extends State<DetectorResultsScreen> {
           const SizedBox(height: 8),
           _ControlsCard(state: _state),
           const SizedBox(height: 8),
-          for (final id in ids) _DetectorTile(id: id, result: results[id]),
+          for (final (heading, groupIds) in groupByCategory(ids)) ...[
+            Padding(
+              padding: const EdgeInsets.only(top: 12, bottom: 4),
+              child: Text(heading, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+            ),
+            for (final id in groupIds) _DetectorTile(id: id, result: results[id]),
+          ],
         ],
       ),
     );
@@ -227,7 +217,7 @@ class _DetectorTile extends StatelessWidget {
             Row(children: [
               Expanded(
                 child: Text(
-                  r == null ? id : '${r.title}  ($id)',
+                  '${detectorName(id)}  ($id)',
                   style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
                 ),
               ),
