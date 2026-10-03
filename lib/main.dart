@@ -1128,7 +1128,7 @@ class _TrialChecksCard extends StatelessWidget {
           key: const Key('pin-value'),
           controller: pinController,
           decoration: const InputDecoration(
-            labelText: 'SPKI pin(s)', hintText: 'sha256/<Base64>, comma-separated', border: OutlineInputBorder(), isDense: true,
+            labelText: 'SPKI pin(s)', hintText: 'sha256/<Base64 of 32 bytes>, comma-separated', border: OutlineInputBorder(), isDense: true,
           ),
         ),
         Wrap(spacing: 8, children: [
