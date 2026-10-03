@@ -1,8 +1,11 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- Permissions for trying the newer detectors on a phone. Declared only:
-         the app does not request any of them at runtime yet, so detectors
-         that need a runtime permission (READ_PHONE_STATE, location) report
-         UNAVAILABLE until it is granted in Settings → Apps → rasp_trial. -->
+    <!-- Permissions for trying the newer detectors on a phone.
+         READ_PHONE_STATE is requested at runtime by the "Grant permissions"
+         button (Trial checks card); vishing_call and sim_change report
+         UNAVAILABLE until it is granted. Location is not requested at
+         runtime: mock_location reports UNAVAILABLE until location is allowed
+         in Settings → Apps → rasp_trial → Permissions. The other permissions
+         below are granted at install. -->
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>        <!-- unsafe_wifi -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>     <!-- unsafe_wifi, network checks -->
     <uses-permission android:name="android.permission.READ_PHONE_STATE"/>         <!-- vishing_call, sim_change -->
