@@ -1,7 +1,9 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show kDebugMode, visibleForTesting;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show SystemNavigator;
+import 'package:permission_handler/permission_handler.dart';
 import 'package:rasp_shield/sdk/core/core.dart'
     show DetectionResult, DetectionStatus, DetectionStatusX;
 import 'package:rasp_shield/sdk/events/security_event_shipper.dart';
@@ -11,15 +13,28 @@ import 'package:rasp_shield/sdk/security_controls.dart';
 import 'detector_catalog.dart';
 import 'detector_results_screen.dart';
 import 'geolocator_location_provider.dart';
+import 'test_reputation_list.dart';
 import 'threat_policy.dart';
+import 'trial_tools.dart';
 
 void main() {
   runApp(const RaspTrialApp());
 }
 
+/// Requests READ_PHONE_STATE at runtime (permission_handler's
+/// `Permission.phone` asks only for the phone permissions the manifest
+/// declares — here just READ_PHONE_STATE). Replaceable in tests.
+@visibleForTesting
+Future<PermissionStatus> Function() requestPhonePermission = () => Permission.phone.request();
+
+/// Current READ_PHONE_STATE status, without asking. Replaceable in tests.
+@visibleForTesting
+Future<PermissionStatus> Function() phonePermissionStatus = () => Permission.phone.status;
+
 /// Everything this trial app turns on. Detector ids are listed in the same
-/// order in detector_catalog.dart (`trialDetectorIds`).
-const trialConfig = RaspLeanConfig(
+/// order in detector_catalog.dart (`trialDetectorIds`). [pinHost] and [pins]
+/// set the `mitm` SPKI pin (the "Trial checks" card); none by default.
+RaspLeanConfig trialConfig({String? pinHost, List<String> pins = const []}) => RaspLeanConfig(
   // Original 4
   screenshotProtection: true,
   usbDetection: true,
@@ -46,20 +61,22 @@ const trialConfig = RaspLeanConfig(
   // value for. Supply one to turn it on.
   tamperDetection: true,
   untrustedInstallSourceDetection: true,
-  // Network security — highRiskIpDetection calls a third-party API
-  // (ipapi.co) directly and always reports unavailable in debug
-  // builds (that service's own deliberate choice) — left on so you
-  // can see that honest behavior rather than hiding it.
+  // Network security — highRiskIpDetection asks the platform backend's
+  // GET /v1/ip-risk (HMAC-signed with the credential pasted in "Backend
+  // Sync"); UNAVAILABLE until a credential is configured.
   vpnDetection: true,
   mitmDetection: true,
+  certificatePinHost: pinHost,
+  certificatePins: pins,
   highRiskIpDetection: true,
   // Privacy & screen
   overlayDetection: true,
   accessibilityDetection: true,
   externalDisplayDetection: true,
-  // Newer detectors (Tasks 3a-3c). Those needing a runtime permission
-  // (READ_PHONE_STATE, location) report UNAVAILABLE until it is granted in
-  // Settings; malware_reputation reports UNAVAILABLE without a signed list.
+  // Newer detectors (Tasks 3a-3c). sim_change and vishing_call need
+  // READ_PHONE_STATE ("Grant permissions" in the Trial checks card);
+  // mock_location needs location (granted in Settings). malware_reputation
+  // uses the signed test list from lib/test_reputation_list.dart.
   mockLocationDetection: true,
   timeSpoofingDetection: true,
   unsafeWifiDetection: true,
@@ -70,6 +87,8 @@ const trialConfig = RaspLeanConfig(
   taskHijackDetection: true,
   deviceStateAttestationDetection: true,
   malwareReputationDetection: true,
+  malwareReputationListJson: testReputationListJson,
+  malwareReputationPublicKey: testReputationPublicKey,
   // Evidence envelopes (device-key signed) instead of legacy HMAC batches;
   // the first delivery registers this device with the backend.
   useEvidenceEnvelope: true,
@@ -143,6 +162,16 @@ class _SecurityDashboardState extends State<SecurityDashboard>
   /// only show the warning banner. Not persisted — off again on restart.
   bool _closeOnUsbDebugging = false;
 
+  // ── Trial checks card ────────────────────────────────────────────────────
+  PermissionStatus? _phonePermission;
+  /// sim_change / vishing_call verdicts read right after the permission answer.
+  String? _phoneRecheck;
+  /// The mitm SPKI pin the session runs with (none by default; not persisted).
+  String? _pinHost;
+  List<String> _pins = const [];
+  final _pinHostController = TextEditingController();
+  final _pinController = TextEditingController();
+
   // ── Backend sync (RaspSecurityEventShipper) ───────────────────────────────
   //
   // This is the ONLY new piece for talking to your platform backend. Paste
@@ -180,6 +209,8 @@ class _SecurityDashboardState extends State<SecurityDashboard>
     _session?.dispose(); // also turns clipboard protection back off
     _clipboardTestController.dispose();
     _credentialController.dispose();
+    _pinHostController.dispose();
+    _pinController.dispose();
     RaspSecurityEventShipper.onShipError = null;
     super.dispose();
   }
@@ -213,7 +244,22 @@ class _SecurityDashboardState extends State<SecurityDashboard>
     final restored = await RaspSecurityEventShipper.restore();
     if (restored && mounted) setState(() => _shipperConfigured = true);
 
-    final session = await RaspLeanSession.start(trialConfig);
+    unawaited(phonePermissionStatus().then((status) {
+      if (mounted) setState(() => _phonePermission = status);
+    }));
+    await _startSession(trialConfig());
+    if (mounted && _shipperConfigured) setState(() => _lastSyncAt = DateTime.now());
+
+    // Keep the session's location reasonably fresh — the SDK itself never
+    // fetches this, so this app does, on its own schedule. Every 15s is a
+    // deliberate middle ground: frequent enough that a DETECTED event
+    // rarely ships with no coordinate, without polling GPS continuously.
+    unawaited(_refreshLocation());
+    _locationTimer = Timer.periodic(const Duration(seconds: 15), (_) => _refreshLocation());
+  }
+
+  Future<void> _startSession(RaspLeanConfig config) async {
+    final session = await RaspLeanSession.start(config);
     _stateSub = session.stateStream.listen((state) {
       if (mounted) setState(() => _state = state);
       _reactToStateChange(_previousLeanState, state);
@@ -223,16 +269,100 @@ class _SecurityDashboardState extends State<SecurityDashboard>
       setState(() {
         _session = session;
         _state = session.current;
-        if (_shipperConfigured) _lastSyncAt = DateTime.now();
       });
     }
+  }
 
-    // Keep the session's location reasonably fresh — the SDK itself never
-    // fetches this, so this app does, on its own schedule. Every 15s is a
-    // deliberate middle ground: frequent enough that a DETECTED event
-    // rarely ships with no coordinate, without polling GPS continuously.
-    unawaited(_refreshLocation());
-    _locationTimer = Timer.periodic(const Duration(seconds: 15), (_) => _refreshLocation());
+  bool _restarting = false;
+
+  /// Stops the session and starts it again with the current pin settings.
+  /// Never hangs: dispose and start each wait at most 2 s for the native side
+  /// (RaspLeanSession.nativeCallTimeout), then continue. A failure is shown
+  /// instead of leaving the screen without a session; a second tap while a
+  /// restart runs is ignored.
+  Future<void> _restartSession() async {
+    if (_restarting) return;
+    _restarting = true;
+    try {
+      final old = _session;
+      // Not awaited: the subscription stops at once; its future only reports
+      // clean-up (and, completed in the root zone, never resolves inside a
+      // widget test's fake async).
+      final sub = _stateSub;
+      _stateSub = null;
+      if (sub != null) unawaited(sub.cancel());
+      if (mounted) setState(() => _session = null);
+      await old?.dispose().timeout(RaspLeanSession.nativeCallTimeout, onTimeout: () {});
+      await _startSession(trialConfig(pinHost: _pinHost, pins: _pins));
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not restart the session: $e')));
+      }
+    } finally {
+      _restarting = false;
+    }
+  }
+
+  // ── Trial checks ─────────────────────────────────────────────────────────
+
+  /// Asks for READ_PHONE_STATE, then re-runs the detectors (one session tick
+  /// includes sim_change and vishing_call) and shows their new verdicts.
+  Future<void> _grantPhonePermission() async {
+    final status = await requestPhonePermission();
+    if (!mounted) return;
+    setState(() {
+      _phonePermission = status;
+      _phoneRecheck = 'Re-running the SIM and call checks…';
+    });
+    final session = _session;
+    if (session == null) return;
+    // Wait for a SIM result observed after the answer — a tick that was
+    // already running may still report the old (no-permission) result.
+    final answeredAt = DateTime.now();
+    final next = session.stateStream
+        .firstWhere((s) => s.extendedDetectors['sim_change']?.observedAt.isBefore(answeredAt) == false)
+        .timeout(const Duration(seconds: 15), onTimeout: () => session.current);
+    await session.refreshNow();
+    final state = await next;
+    if (!mounted) return;
+    setState(() => _phoneRecheck =
+        'SIM change: ${detectorVerdict(state, 'sim_change')}\n'
+        'Call during app use: ${detectorVerdict(state, 'vishing_call')}');
+  }
+
+  Future<void> _resetSimBaseline() async {
+    final ok = await RaspLeanSession.resetSimBaseline();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(ok
+          ? 'SIM baseline cleared. The next check stores a new one (UNKNOWN "baseline stored").'
+          : 'SIM baseline not reset (only allowed in a debug build).'),
+    ));
+    await _session?.refreshNow();
+  }
+
+  Future<void> _applyPin() async {
+    final host = _pinHostController.text.trim();
+    final pins = parsePins(_pinController.text);
+    if (host.isEmpty || pins.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Enter a host and at least one pin.')),
+      );
+      return;
+    }
+    setState(() {
+      _pinHost = host;
+      _pins = pins;
+    });
+    await _restartSession();
+  }
+
+  Future<void> _clearPin() async {
+    setState(() {
+      _pinHost = null;
+      _pins = const [];
+    });
+    await _restartSession();
   }
 
   Future<void> _refreshLocation() async {
@@ -416,6 +546,20 @@ class _SecurityDashboardState extends State<SecurityDashboard>
                     onToggle: _toggleClipboardProtection,
                     onClearNow: _clearClipboardNow,
                     onRefresh: () => _session?.refreshNow(),
+                  ),
+                  const SizedBox(height: 16),
+                  _TrialChecksCard(
+                    state: _state,
+                    phonePermission: _phonePermission,
+                    phoneRecheck: _phoneRecheck,
+                    onGrantPhonePermission: _grantPhonePermission,
+                    onResetSimBaseline: _resetSimBaseline,
+                    pinHost: _pinHost,
+                    pins: _pins,
+                    pinHostController: _pinHostController,
+                    pinController: _pinController,
+                    onApplyPin: _applyPin,
+                    onClearPin: _clearPin,
                   ),
                   const SizedBox(height: 16),
                   _ExtendedDetectorsCard(detectors: _state.extendedDetectors),
@@ -888,6 +1032,122 @@ class _ClipboardCard extends StatelessWidget {
           '— it should paste empty. Never reads the actual clipboard '
           'content, only that a change happened.',
           style: TextStyle(fontSize: 12, fontStyle: FontStyle.italic),
+        ),
+      ],
+    );
+  }
+}
+
+// ── Trial checks card ────────────────────────────────────────────────────────
+//
+// Controls for trying sim_change, vishing_call, mitm and malware_reputation
+// on a phone: the READ_PHONE_STATE request, the debug-only SIM baseline
+// reset, the mitm SPKI pin, and the test reputation list's result.
+
+class _TrialChecksCard extends StatelessWidget {
+  final RaspLeanState state;
+  final PermissionStatus? phonePermission;
+  final String? phoneRecheck;
+  final VoidCallback onGrantPhonePermission;
+  final VoidCallback onResetSimBaseline;
+  final String? pinHost;
+  final List<String> pins;
+  final TextEditingController pinHostController;
+  final TextEditingController pinController;
+  final VoidCallback onApplyPin;
+  final VoidCallback onClearPin;
+
+  const _TrialChecksCard({
+    required this.state,
+    required this.phonePermission,
+    required this.phoneRecheck,
+    required this.onGrantPhonePermission,
+    required this.onResetSimBaseline,
+    required this.pinHost,
+    required this.pins,
+    required this.pinHostController,
+    required this.pinController,
+    required this.onApplyPin,
+    required this.onClearPin,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    const hint = TextStyle(fontSize: 12, color: Colors.black54);
+    return _SectionCard(
+      title: 'Trial checks',
+      icon: Icons.science_outlined,
+      children: [
+        Text('Phone permission (READ_PHONE_STATE): ${phonePermissionLabel(phonePermission)}',
+            key: const Key('phone-permission')),
+        const Text('Needed by SIM change and Call during app use.', style: hint),
+        const SizedBox(height: 8),
+        Wrap(spacing: 8, children: [
+          FilledButton.icon(
+            key: const Key('grant-permissions'),
+            onPressed: onGrantPhonePermission,
+            icon: const Icon(Icons.phone_android),
+            label: const Text('Grant permissions'),
+          ),
+          if (phonePermission == PermissionStatus.permanentlyDenied)
+            TextButton(onPressed: openAppSettings, child: const Text('Open app settings')),
+        ]),
+        if (phoneRecheck != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Text(phoneRecheck!, key: const Key('phone-recheck'), style: const TextStyle(fontSize: 13)),
+          ),
+        if (kDebugMode) ...[
+          const Divider(height: 24),
+          OutlinedButton.icon(
+            key: const Key('reset-sim-baseline'),
+            onPressed: onResetSimBaseline,
+            icon: const Icon(Icons.restart_alt),
+            label: const Text('Reset SIM baseline'),
+          ),
+          const Text(
+            'Debug builds only. The next check stores a new baseline and reports UNKNOWN "baseline stored".',
+            style: hint,
+          ),
+        ],
+        const Divider(height: 24),
+        Text(
+          'TLS pin for mitm: ${pinHost == null ? 'none (mitm reports pin_not_configured)' : '$pinHost, ${pins.length} pin(s)'}',
+          key: const Key('pin-status'),
+        ),
+        const SizedBox(height: 8),
+        TextField(
+          key: const Key('pin-host'),
+          controller: pinHostController,
+          decoration: const InputDecoration(
+            labelText: 'Pinned host', hintText: 'api.example.com', border: OutlineInputBorder(), isDense: true,
+          ),
+        ),
+        const SizedBox(height: 8),
+        TextField(
+          key: const Key('pin-value'),
+          controller: pinController,
+          decoration: const InputDecoration(
+            labelText: 'SPKI pin(s)', hintText: 'sha256/<Base64>, comma-separated', border: OutlineInputBorder(), isDense: true,
+          ),
+        ),
+        Wrap(spacing: 8, children: [
+          FilledButton(key: const Key('apply-pin'), onPressed: onApplyPin, child: const Text('Apply pin')),
+          TextButton(key: const Key('clear-pin'), onPressed: onClearPin, child: const Text('No pin')),
+        ]),
+        const Text(
+          'A wrong pin makes mitm DETECTED and lists the pins the server really sent (observed_pin) '
+          'on the results screen; copy one to get a match.',
+          style: hint,
+        ),
+        const Divider(height: 24),
+        Text('Malware reputation test list flags: $testReputationPackage',
+            style: const TextStyle(fontWeight: FontWeight.w600)),
+        Text('Result: ${detectorVerdict(state, 'malware_reputation')}', key: const Key('reputation-result')),
+        const Text(
+          'A harmless test entry. To flag another installed app: '
+          'node tool/make_test_reputation_list.js <package>, then rebuild.',
+          style: hint,
         ),
       ],
     );

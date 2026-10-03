@@ -47,6 +47,8 @@ dependencies:
   # sdk_rasp's location_manager.dart), so this app supplies its own via
   # lib/geolocator_location_provider.dart.
   geolocator: ^13.0.1
+  # Runtime request for READ_PHONE_STATE (sim_change, vishing_call) — Task 4.8.
+  permission_handler: ^11.4.0
 
 dev_dependencies:
   flutter_test:
