@@ -50,3 +50,4 @@ app.*.map.json
 # Local additions (Task 4.6): heap dumps and Kotlin caches
 *.hprof
 .kotlin/
+android/build/
