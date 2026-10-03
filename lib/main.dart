@@ -8,11 +8,70 @@ import 'package:rasp_shield/sdk/events/security_event_shipper.dart';
 import 'package:rasp_shield/sdk/lean_session.dart';
 import 'package:rasp_shield/sdk/security_controls.dart';
 
+import 'detector_results_screen.dart';
 import 'geolocator_location_provider.dart';
 
 void main() {
   runApp(const RaspTrialApp());
 }
+
+/// Everything this trial app turns on. Detector ids are listed in the same
+/// order in detector_results_screen.dart (`trialDetectorIds`).
+const trialConfig = RaspLeanConfig(
+  // Original 4
+  screenshotProtection: true,
+  usbDetection: true,
+  adbDetection: true,
+  clipboardProtection: true,
+  clipboardAutoClear: true,
+  // Device integrity
+  rootDetection: true,
+  emulatorDetection: true,
+  deviceBindingCheck: true,
+  cloneDetection: true,
+  developerModeDetection: true,
+  deviceLockCheck: true,
+  secureHardwareCheck: true,
+  deviceFingerprintCheck: true,
+  // Runtime protection
+  fridaDetection: true,
+  debuggerDetection: true,
+  reverseEngineeringToolsDetection: true,
+  hookDetection: true,
+  riskyAppDetection: true,
+  // App integrity — repackagingDetection deliberately left off: it
+  // needs expectedSigningCertSha256, which this demo has no real
+  // value for. Supply one to turn it on.
+  tamperDetection: true,
+  untrustedInstallSourceDetection: true,
+  // Network security — highRiskIpDetection calls a third-party API
+  // (ipapi.co) directly and always reports unavailable in debug
+  // builds (that service's own deliberate choice) — left on so you
+  // can see that honest behavior rather than hiding it.
+  vpnDetection: true,
+  mitmDetection: true,
+  highRiskIpDetection: true,
+  // Privacy & screen
+  overlayDetection: true,
+  accessibilityDetection: true,
+  externalDisplayDetection: true,
+  // Newer detectors (Tasks 3a-3c). Those needing a runtime permission
+  // (READ_PHONE_STATE, location) report UNAVAILABLE until it is granted in
+  // Settings; malware_reputation reports UNAVAILABLE without a signed list.
+  mockLocationDetection: true,
+  timeSpoofingDetection: true,
+  unsafeWifiDetection: true,
+  screenRecordingDetection: true,
+  vishingCallDetection: true,
+  simChangeDetection: true,
+  thirdPartyKeyboardDetection: true,
+  taskHijackDetection: true,
+  deviceStateAttestationDetection: true,
+  malwareReputationDetection: true,
+  // Evidence envelopes (device-key signed) instead of legacy HMAC batches;
+  // the first delivery registers this device with the backend.
+  useEvidenceEnvelope: true,
+);
 
 class RaspTrialApp extends StatelessWidget {
   const RaspTrialApp({super.key});
@@ -147,45 +206,7 @@ class _SecurityDashboardState extends State<SecurityDashboard>
     final restored = await RaspSecurityEventShipper.restore();
     if (restored && mounted) setState(() => _shipperConfigured = true);
 
-    final session = await RaspLeanSession.start(const RaspLeanConfig(
-      // Original 4
-      screenshotProtection: true,
-      usbDetection: true,
-      adbDetection: true,
-      clipboardProtection: true,
-      clipboardAutoClear: true,
-      // Device integrity
-      rootDetection: true,
-      emulatorDetection: true,
-      deviceBindingCheck: true,
-      cloneDetection: true,
-      developerModeDetection: true,
-      deviceLockCheck: true,
-      secureHardwareCheck: true,
-      deviceFingerprintCheck: true,
-      // Runtime protection
-      fridaDetection: true,
-      debuggerDetection: true,
-      reverseEngineeringToolsDetection: true,
-      hookDetection: true,
-      riskyAppDetection: true,
-      // App integrity — repackagingDetection deliberately left off: it
-      // needs expectedSigningCertSha256, which this demo has no real
-      // value for. Supply one to turn it on.
-      tamperDetection: true,
-      untrustedInstallSourceDetection: true,
-      // Network security — highRiskIpDetection calls a third-party API
-      // (ipapi.co) directly and always reports unavailable in debug
-      // builds (that service's own deliberate choice) — left on so you
-      // can see that honest behavior rather than hiding it.
-      vpnDetection: true,
-      mitmDetection: true,
-      highRiskIpDetection: true,
-      // Privacy & screen
-      overlayDetection: true,
-      accessibilityDetection: true,
-      externalDisplayDetection: true,
-    ));
+    final session = await RaspLeanSession.start(trialConfig);
     _stateSub = session.stateStream.listen((state) {
       if (mounted) setState(() => _state = state);
       _reactToStateChange(_previousLeanState, state);
@@ -324,7 +345,20 @@ class _SecurityDashboardState extends State<SecurityDashboard>
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('RASP Shield — Lean Trial')),
+      appBar: AppBar(
+        title: const Text('RASP Shield — Lean Trial'),
+        actions: [
+          IconButton(
+            tooltip: 'Detector results',
+            icon: const Icon(Icons.list_alt),
+            onPressed: _session == null
+                ? null
+                : () => Navigator.of(context).push(MaterialPageRoute<void>(
+                      builder: (_) => DetectorResultsScreen(session: _session!),
+                    )),
+          ),
+        ],
+      ),
       body: _integrationStatus == null
           ? const Center(child: CircularProgressIndicator())
           : RefreshIndicator(

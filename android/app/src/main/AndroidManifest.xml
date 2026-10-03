@@ -1,4 +1,13 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Permissions for trying the newer detectors on a phone. Declared only:
+         the app does not request any of them at runtime yet, so detectors
+         that need a runtime permission (READ_PHONE_STATE, location) report
+         UNAVAILABLE until it is granted in Settings → Apps → rasp_trial. -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>        <!-- unsafe_wifi -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>     <!-- unsafe_wifi, network checks -->
+    <uses-permission android:name="android.permission.READ_PHONE_STATE"/>         <!-- vishing_call, sim_change -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>   <!-- location (mock_location input) -->
+    <uses-permission android:name="android.permission.DETECT_SCREEN_RECORDING"/>  <!-- screen_recording (Android 15+) -->
     <application
         android:label="rasp_trial"
         android:name="${applicationName}"

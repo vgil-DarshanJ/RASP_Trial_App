@@ -15,12 +15,10 @@ Future<RaspLocationSnapshot?> captureLocationSnapshot() async {
   try {
     if (!await Geolocator.isLocationServiceEnabled()) return null;
 
-    var permission = await Geolocator.checkPermission();
-    if (permission == LocationPermission.denied) {
-      // Only requests once per call, never loops — a user who denies it
-      // stays denied for this run rather than being nagged repeatedly.
-      permission = await Geolocator.requestPermission();
-    }
+    // Checks only — this trial build does not prompt for location yet. Grant
+    // it in Settings → Apps → rasp_trial → Permissions to get readings (and
+    // mock_location results).
+    final permission = await Geolocator.checkPermission();
     if (permission == LocationPermission.denied ||
         permission == LocationPermission.deniedForever) {
       return null;
@@ -38,6 +36,8 @@ Future<RaspLocationSnapshot?> captureLocationSnapshot() async {
       longitude: position.longitude,
       accuracyMeters: position.accuracy,
       capturedAt: DateTime.now().toUtc(),
+      // Android's own mock flag for this fix — what mock_location decides on.
+      isMock: position.isMocked,
     );
   } catch (_) {
     // Timeout, platform channel error, or any other failure — degrade to
