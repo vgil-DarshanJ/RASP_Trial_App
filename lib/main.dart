@@ -11,6 +11,7 @@ import 'package:rasp_shield/sdk/lean_session.dart';
 import 'package:rasp_shield/sdk/security_controls.dart';
 
 import 'detector_catalog.dart';
+import 'debug_result_logger.dart';
 import 'detector_results_screen.dart';
 import 'geolocator_location_provider.dart';
 import 'test_reputation_list.dart';
@@ -162,6 +163,10 @@ class _SecurityDashboardState extends State<SecurityDashboard>
   /// only show the warning banner. Not persisted — off again on restart.
   bool _closeOnUsbDebugging = false;
 
+  /// Debug builds only: every detector result to logcat (tag RASP_RESULT).
+  /// `kDebugMode` is a compile-time constant, so release builds drop it.
+  final DebugResultLogger? _resultLogger = kDebugMode ? DebugResultLogger() : null;
+
   // ── Trial checks card ────────────────────────────────────────────────────
   PermissionStatus? _phonePermission;
   /// sim_change / vishing_call verdicts read right after the permission answer.
@@ -261,6 +266,7 @@ class _SecurityDashboardState extends State<SecurityDashboard>
   Future<void> _startSession(RaspLeanConfig config) async {
     final session = await RaspLeanSession.start(config);
     _stateSub = session.stateStream.listen((state) {
+      _resultLogger?.log(state);
       if (mounted) setState(() => _state = state);
       _reactToStateChange(_previousLeanState, state);
       _previousLeanState = state;

@@ -16,12 +16,16 @@ const _leanStateChannel = EventChannel('com.shieldsdk.security/lean_state');
 // Answered with "nothing stored", so the credential restore at startup
 // finishes instead of waiting forever.
 const _secureStorageChannel = MethodChannel('plugins.it_nomads.com/flutter_secure_storage');
+// The debug-only RASP_RESULT logcat channel (android/app/src/debug): recorded.
+const _resultLogChannel = MethodChannel('rasp_trial/debug_result_log');
 
 class FakeNative {
   /// Every plugin method call, in order, with its arguments.
   final calls = <(String, Object?)>[];
   /// Methods sent on the platform channel (e.g. SystemNavigator.pop).
   final platformCalls = <String>[];
+  /// Lines sent to the RASP_RESULT logcat channel.
+  final resultLogLines = <String>[];
   /// Answers plugin methods; `true` for anything it does not handle.
   Object? Function(String method, Object? arguments)? answer;
   late MockStreamHandlerEventSink events;
@@ -55,7 +59,12 @@ Future<FakeNative> bootTrialApp(WidgetTester tester, {PermissionStatus phoneStat
     return null;
   });
   messenger.setMockMethodCallHandler(_secureStorageChannel, (call) async => null);
+  messenger.setMockMethodCallHandler(_resultLogChannel, (call) async {
+    native.resultLogLines.add(call.arguments as String);
+    return true;
+  });
   addTearDown(() {
+    messenger.setMockMethodCallHandler(_resultLogChannel, null);
     RaspNativeChannel.testInvokeHandler = null;
     requestPhonePermission = originalRequest;
     phonePermissionStatus = originalStatus;
