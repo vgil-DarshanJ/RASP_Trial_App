@@ -1,0 +1,2 @@
+# Written by android/app/build.gradle.kts (generateRaspBuildConfig*) at build time.
+rasp_build.json
