@@ -11,13 +11,15 @@ import 'package:rasp_shield/sdk/lean_session.dart' show RaspLocationSnapshot;
 /// permission or disabled location service returns `null` — the caller
 /// should simply leave `currentLocation` at its previous value (or unset)
 /// when this returns `null`, never guess.
-Future<RaspLocationSnapshot?> captureLocationSnapshot() async {
+///
+/// [shareWithBackend] marks the fix as shared with the backend (the user's
+/// opt-in, Task 6.0); otherwise it is only used on the device.
+Future<RaspLocationSnapshot?> captureLocationSnapshot({bool shareWithBackend = false}) async {
   try {
     if (!await Geolocator.isLocationServiceEnabled()) return null;
 
-    // Checks only — this trial build does not prompt for location yet. Grant
-    // it in Settings → Apps → rasp_trial → Permissions to get readings (and
-    // mock_location results).
+    // Checks only: the permission is requested by the "Share location"
+    // switch (main.dart) before this is called.
     final permission = await Geolocator.checkPermission();
     if (permission == LocationPermission.denied ||
         permission == LocationPermission.deniedForever) {
@@ -35,9 +37,11 @@ Future<RaspLocationSnapshot?> captureLocationSnapshot() async {
       latitude: position.latitude,
       longitude: position.longitude,
       accuracyMeters: position.accuracy,
-      capturedAt: DateTime.now().toUtc(),
+      // The fix's own time, so the SDK can reject a stale fix (> 2 min).
+      capturedAt: position.timestamp.toUtc(),
       // Android's own mock flag for this fix — what mock_location decides on.
       isMock: position.isMocked,
+      shareWithBackend: shareWithBackend,
     );
   } catch (_) {
     // Timeout, platform channel error, or any other failure — degrade to

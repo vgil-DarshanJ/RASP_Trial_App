@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart' show kDebugMode, visibleForTesting;
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart' show SystemNavigator;
+import 'package:flutter/services.dart' show SystemNavigator, rootBundle;
 import 'package:permission_handler/permission_handler.dart';
 import 'package:rasp_shield/sdk/core/core.dart'
     show DetectionResult, DetectionStatus, DetectionStatusX;
@@ -11,6 +11,7 @@ import 'package:rasp_shield/sdk/lean_session.dart';
 import 'package:rasp_shield/sdk/security_controls.dart';
 
 import 'detector_catalog.dart';
+import 'build_config.dart';
 import 'debug_result_logger.dart';
 import 'detector_results_screen.dart';
 import 'geolocator_location_provider.dart';
@@ -28,6 +29,17 @@ void main() {
 @visibleForTesting
 Future<PermissionStatus> Function() requestPhonePermission = () => Permission.phone.request();
 
+/// Asks for location (permission_handler `Permission.locationWhenInUse`:
+/// coarse + fine, as declared). Called when the user turns "Share location"
+/// on. Replaceable in tests.
+@visibleForTesting
+Future<PermissionStatus> Function() requestLocationPermission = () => Permission.locationWhenInUse.request();
+
+/// Reads one opted-in fix (geolocator, with the platform mock flag).
+/// Replaceable in tests.
+@visibleForTesting
+Future<RaspLocationSnapshot?> Function() readLocationFix = () => captureLocationSnapshot(shareWithBackend: true);
+
 /// Current READ_PHONE_STATE status, without asking. Replaceable in tests.
 @visibleForTesting
 Future<PermissionStatus> Function() phonePermissionStatus = () => Permission.phone.status;
@@ -35,7 +47,8 @@ Future<PermissionStatus> Function() phonePermissionStatus = () => Permission.pho
 /// Everything this trial app turns on. Detector ids are listed in the same
 /// order in detector_catalog.dart (`trialDetectorIds`). [pinHost] and [pins]
 /// set the `mitm` SPKI pin (the "Trial checks" card); none by default.
-RaspLeanConfig trialConfig({String? pinHost, List<String> pins = const []}) => RaspLeanConfig(
+/// [expectedSigningCertSha256] comes from the build (TrialBuildConfig).
+RaspLeanConfig trialConfig({String? pinHost, List<String> pins = const [], String? expectedSigningCertSha256}) => RaspLeanConfig(
   // Original 4
   screenshotProtection: true,
   usbDetection: true,
@@ -57,10 +70,12 @@ RaspLeanConfig trialConfig({String? pinHost, List<String> pins = const []}) => R
   reverseEngineeringToolsDetection: true,
   hookDetection: true,
   riskyAppDetection: true,
-  // App integrity — repackagingDetection deliberately left off: it
-  // needs expectedSigningCertSha256, which this demo has no real
-  // value for. Supply one to turn it on.
+  // App integrity — tamper compares the signing certificate with the hash
+  // the Android build wrote to assets/generated/rasp_build.json (Task 6.0);
+  // without it tamper reports UNKNOWN "not configured". repackagingDetection
+  // stays off (tamper covers the certificate check).
   tamperDetection: true,
+  expectedSigningCertSha256: expectedSigningCertSha256,
   untrustedInstallSourceDetection: true,
   // Network security — highRiskIpDetection asks the platform backend's
   // GET /v1/ip-risk (HMAC-signed with the credential pasted in "Backend
@@ -140,14 +155,15 @@ class _SecurityDashboardState extends State<SecurityDashboard>
   StreamSubscription<RaspLeanState>? _stateSub;
   RaspLeanState _state = RaspLeanState.initial;
 
-  /// This app's own location refresh — the SDK never fetches location
-  /// itself (see RaspLocationSnapshot's doc); this just keeps
-  /// `_session.currentLocation` reasonably fresh so a DETECTED event has
-  /// somewhere to pull a coordinate from when it ships. A failed/denied
-  /// read leaves `currentLocation` at whatever it was before (never
-  /// cleared to a guess), so it degrades to "no location on this event"
-  /// rather than a stale one being worse than none.
+  /// Location is read only while the user has "Share location" on (opt-in,
+  /// off by default, not saved): then a fix every 15 s goes to the SDK
+  /// (mock_location) and with events to the backend (location_opt_in).
   Timer? _locationTimer;
+  bool _shareLocation = false;
+  RaspLocationSnapshot? _lastFix;
+
+  /// From the Android build (signing certificate hash for tamper).
+  TrialBuildConfig _buildConfig = TrialBuildConfig.none;
 
   /// The previous emission from `stateStream`, so in-app reactions
   /// (SnackBar/warning dialog) fire only on a genuine transition — never
@@ -252,16 +268,16 @@ class _SecurityDashboardState extends State<SecurityDashboard>
     unawaited(phonePermissionStatus().then((status) {
       if (mounted) setState(() => _phonePermission = status);
     }));
-    await _startSession(trialConfig());
+    _buildConfig = await TrialBuildConfig.load(rootBundle);
+    await _startSession(_config());
     if (mounted && _shipperConfigured) setState(() => _lastSyncAt = DateTime.now());
-
-    // Keep the session's location reasonably fresh — the SDK itself never
-    // fetches this, so this app does, on its own schedule. Every 15s is a
-    // deliberate middle ground: frequent enough that a DETECTED event
-    // rarely ships with no coordinate, without polling GPS continuously.
-    unawaited(_refreshLocation());
-    _locationTimer = Timer.periodic(const Duration(seconds: 15), (_) => _refreshLocation());
   }
+
+  RaspLeanConfig _config() => trialConfig(
+        pinHost: _pinHost,
+        pins: _pins,
+        expectedSigningCertSha256: _buildConfig.expectedSigningCertSha256,
+      );
 
   Future<void> _startSession(RaspLeanConfig config) async {
     final session = await RaspLeanSession.start(config);
@@ -299,7 +315,8 @@ class _SecurityDashboardState extends State<SecurityDashboard>
       if (sub != null) unawaited(sub.cancel());
       if (mounted) setState(() => _session = null);
       await old?.dispose().timeout(RaspLeanSession.nativeCallTimeout, onTimeout: () {});
-      await _startSession(trialConfig(pinHost: _pinHost, pins: _pins));
+      await _startSession(_config());
+      if (_shareLocation && _lastFix != null) _session?.currentLocation = _lastFix;
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not restart the session: $e')));
@@ -371,12 +388,41 @@ class _SecurityDashboardState extends State<SecurityDashboard>
     await _restartSession();
   }
 
+  /// The "Share location" switch. On: asks for location, then reads a fix
+  /// now and every 15 s. Off (or permission refused): stops reading and
+  /// clears the location in the SDK, so nothing more is checked or shipped.
+  Future<void> _setShareLocation(bool on) async {
+    if (!on) {
+      _locationTimer?.cancel();
+      _locationTimer = null;
+      setState(() {
+        _shareLocation = false;
+        _lastFix = null;
+      });
+      _session?.currentLocation = null;
+      return;
+    }
+    final status = await requestLocationPermission();
+    if (!mounted) return;
+    if (!status.isGranted && !status.isLimited) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Location permission not granted, so location is not shared.')),
+      );
+      return;
+    }
+    setState(() => _shareLocation = true);
+    await _refreshLocation();
+    _locationTimer?.cancel();
+    _locationTimer = Timer.periodic(const Duration(seconds: 15), (_) => _refreshLocation());
+  }
+
   Future<void> _refreshLocation() async {
-    final snapshot = await captureLocationSnapshot();
-    // A failed/denied read leaves the session's last-known value alone —
-    // see this field's own doc for why that's the honest default rather
-    // than clearing to null on a single transient failure.
-    if (snapshot != null) _session?.currentLocation = snapshot;
+    if (!_shareLocation) return;
+    final snapshot = await readLocationFix();
+    // A failed read keeps the last fix; the SDK reports it stale after 2 min.
+    if (snapshot == null || !_shareLocation || !mounted) return;
+    _session?.currentLocation = snapshot;
+    setState(() => _lastFix = snapshot);
   }
 
   // ── Screenshot / video ───────────────────────────────────────────────────
@@ -566,6 +612,9 @@ class _SecurityDashboardState extends State<SecurityDashboard>
                     pinController: _pinController,
                     onApplyPin: _applyPin,
                     onClearPin: _clearPin,
+                    shareLocation: _shareLocation,
+                    lastFix: _lastFix,
+                    onShareLocationChanged: _setShareLocation,
                   ),
                   const SizedBox(height: 16),
                   _ExtendedDetectorsCard(detectors: _state.extendedDetectors),
@@ -1062,6 +1111,9 @@ class _TrialChecksCard extends StatelessWidget {
   final TextEditingController pinController;
   final VoidCallback onApplyPin;
   final VoidCallback onClearPin;
+  final bool shareLocation;
+  final RaspLocationSnapshot? lastFix;
+  final ValueChanged<bool> onShareLocationChanged;
 
   const _TrialChecksCard({
     required this.state,
@@ -1075,6 +1127,9 @@ class _TrialChecksCard extends StatelessWidget {
     required this.pinController,
     required this.onApplyPin,
     required this.onClearPin,
+    required this.shareLocation,
+    required this.lastFix,
+    required this.onShareLocationChanged,
   });
 
   @override
@@ -1116,6 +1171,31 @@ class _TrialChecksCard extends StatelessWidget {
             style: hint,
           ),
         ],
+        const Divider(height: 24),
+        SwitchListTile(
+          key: const Key('share-location'),
+          contentPadding: EdgeInsets.zero,
+          title: const Text('Share location'),
+          subtitle: const Text(
+            'Off by default, not saved. When on, the app asks for location, reads a fix '
+            'every 15 s for mock_location, and sends it with events to the backend '
+            '(marked location_opt_in). Off clears it.',
+            style: TextStyle(fontSize: 12),
+          ),
+          value: shareLocation,
+          onChanged: onShareLocationChanged,
+        ),
+        if (shareLocation)
+          Text(
+            lastFix == null
+                ? 'No fix yet.'
+                : 'Last fix: '
+                    '${lastFix!.latitude.toStringAsFixed(3)}, ${lastFix!.longitude.toStringAsFixed(3)} '
+                    '(mock flag: ${lastFix!.isMock ?? "unknown"})',
+            key: const Key('last-fix'),
+            style: const TextStyle(fontSize: 12),
+          ),
+        Text('Mock location: ${detectorVerdict(state, "mock_location")}', key: const Key('mock-location-result')),
         const Divider(height: 24),
         Text(
           'TLS pin for mitm: ${pinHost == null ? 'none (mitm reports pin_not_configured)' : '$pinHost, ${pins.length} pin(s)'}',
