@@ -1,5 +1,6 @@
 import 'package:permission_handler/permission_handler.dart' show PermissionStatus;
-import 'package:rasp_shield/sdk/lean_session.dart' show RaspLeanState;
+import 'package:rasp_shield/sdk/lean_session.dart'
+    show RaspLeanState, RaspLocationHeartbeatOutcome, RaspLocationHeartbeatStatus;
 
 /// SPKI pins typed into the Trial checks card: separated by commas, spaces or
 /// new lines; a pin without the `sha256/` prefix gets it.
@@ -18,6 +19,28 @@ String phonePermissionLabel(PermissionStatus? status) => switch (status) {
       PermissionStatus.limited => 'limited',
       PermissionStatus.provisional => 'provisional',
     };
+
+/// Delivery result of the last location heartbeat, e.g.
+/// `Location heartbeat at 12:00:05: delivered`. [sharing]: the Share
+/// location switch, for the text before the first heartbeat.
+String locationHeartbeatLabel(RaspLocationHeartbeatStatus? status, {required bool sharing}) {
+  if (status == null) {
+    return sharing
+        ? 'Location heartbeat: not sent yet (after the first fix, then every 60 s).'
+        : 'Location heartbeat: off.';
+  }
+  String two(int n) => n.toString().padLeft(2, '0');
+  final at = status.at;
+  final time = '${two(at.hour)}:${two(at.minute)}:${two(at.second)}';
+  final what = status.cleared ? 'Sharing-off message' : 'Location heartbeat';
+  final result = switch (status.outcome) {
+    RaspLocationHeartbeatOutcome.delivered => status.cleared ? 'delivered (backend location cleared)' : 'delivered',
+    RaspLocationHeartbeatOutcome.rejected => 'rejected: ${status.detail}',
+    RaspLocationHeartbeatOutcome.notDelivered => 'not delivered: ${status.detail}',
+    RaspLocationHeartbeatOutcome.notConfigured => 'not sent: ${status.detail}',
+  };
+  return '$what at $time: $result';
+}
 
 /// One detector's current verdict, e.g. `UNKNOWN (baseline stored)`.
 String detectorVerdict(RaspLeanState state, String id) {

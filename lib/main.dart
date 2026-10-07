@@ -1308,8 +1308,9 @@ class _TrialChecksCard extends StatelessWidget {
           title: const Text('Share location'),
           subtitle: const Text(
             'Off by default, not saved. When on, the app asks for location, reads a fix '
-            'every 15 s for mock_location, and sends it with events to the backend '
-            '(marked location_opt_in). Off clears it.',
+            'every 15 s for mock_location, sends a location heartbeat every 60 s and '
+            'attaches the fix to events (marked location_opt_in). Off clears it on the '
+            'phone and on the backend.',
             style: TextStyle(fontSize: 12),
           ),
           value: shareLocation,
@@ -1325,6 +1326,11 @@ class _TrialChecksCard extends StatelessWidget {
             key: const Key('last-fix'),
             style: const TextStyle(fontSize: 12),
           ),
+        Text(
+          locationHeartbeatLabel(state.locationHeartbeat, sharing: shareLocation),
+          key: const Key('location-heartbeat'),
+          style: const TextStyle(fontSize: 12),
+        ),
         Text('Mock location: ${detectorVerdict(state, "mock_location")}', key: const Key('mock-location-result')),
         const Divider(height: 24),
         Text(

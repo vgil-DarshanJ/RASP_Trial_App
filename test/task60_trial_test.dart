@@ -1,4 +1,5 @@
-// Task 6.0, trial app side: the opt-in "Share location" switch and the
+// Task 6.0, trial app side: the opt-in "Share location" switch (and, Task 9.3,
+// the last location heartbeat result) and the
 // build-time signing certificate hash.
 // Real: TrialBuildConfig, trialConfig().toNativeMap(), the dashboard and the
 // plugin's RaspLeanSession. Fake: the native side (test/support/fake_native.dart),
@@ -116,6 +117,47 @@ void main() {
       expect(native.methods, contains('clearLeanSessionLocation'));
       await tester.pump(const Duration(seconds: 30));
       expect(fixReads, 2, reason: 'no more reads after turning it off');
+    });
+
+    testWidgets('the card shows the delivery result of the last location heartbeat (Task 9.3)', (tester) async {
+      fakeLocation();
+      final native = await bootTrialApp(tester);
+      await emitState(tester, native, nativeState());
+      await scrollTo(tester, find.byKey(const Key('location-heartbeat')));
+      String label() => tester.widget<Text>(find.byKey(const Key('location-heartbeat'))).data!;
+      expect(label(), 'Location heartbeat: off.');
+
+      await scrollTo(tester, find.byKey(const Key('share-location')));
+      await tester.tap(find.byKey(const Key('share-location')));
+      for (var i = 0; i < 6; i++) {
+        await tester.pump();
+      }
+      expect(label(), startsWith('Location heartbeat: not sent yet'));
+
+      final at = DateTime(2026, 10, 7, 12, 0, 5).millisecondsSinceEpoch;
+      await emitState(tester, native, {
+        ...nativeState(),
+        'locationHeartbeat': {'atMillis': at, 'outcome': 'DELIVERED', 'detail': 'delivered', 'cleared': false},
+      });
+      expect(label(), 'Location heartbeat at 12:00:05: delivered');
+
+      await emitState(tester, native, {
+        ...nativeState(),
+        'locationHeartbeat': {'atMillis': at + 60000, 'outcome': 'REJECTED', 'detail': 'HTTP 401', 'cleared': false},
+      });
+      expect(label(), 'Location heartbeat at 12:01:05: rejected: HTTP 401');
+
+      await scrollTo(tester, find.byKey(const Key('share-location')));
+      await tester.tap(find.byKey(const Key('share-location')));
+      for (var i = 0; i < 4; i++) {
+        await tester.pump();
+      }
+      await emitState(tester, native, {
+        ...nativeState(),
+        'locationHeartbeat': {'atMillis': at + 90000, 'outcome': 'DELIVERED', 'detail': 'delivered', 'cleared': true},
+      });
+      expect(label(), 'Sharing-off message at 12:01:35: delivered (backend location cleared)');
+      expect(find.byKey(const Key('last-fix')), findsNothing, reason: 'the fix is cleared on the phone too');
     });
 
     testWidgets('a refused permission keeps it off and sends nothing', (tester) async {
