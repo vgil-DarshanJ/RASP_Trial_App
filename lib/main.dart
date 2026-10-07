@@ -11,6 +11,7 @@ import 'package:rasp_shield/sdk/lean_session.dart';
 import 'package:rasp_shield/sdk/security_controls.dart';
 
 import 'detector_catalog.dart';
+import 'backend_check.dart';
 import 'build_config.dart';
 import 'debug_result_logger.dart';
 import 'detector_results_screen.dart';
@@ -218,6 +219,8 @@ class _SecurityDashboardState extends State<SecurityDashboard>
   bool _shipperConfigured = false;
   /// Showing the paste field again to replace a configured credential.
   bool _replacingCredential = false;
+  String? _connectionResult;
+  bool _checkingConnection = false;
   String? _lastShipError;
   DateTime? _lastSyncAt;
 
@@ -509,6 +512,26 @@ class _SecurityDashboardState extends State<SecurityDashboard>
 
   // ── Backend sync ─────────────────────────────────────────────────────────
 
+  /// Calls the configured backend's /healthz and shows whether this phone
+  /// can reach it (with the adb reverse hint for a localhost credential).
+  Future<void> _checkConnection() async {
+    final origin = RaspSecurityEventShipper.configuredBackendOrigin;
+    if (origin == null) {
+      setState(() => _connectionResult = 'No backend configured yet: paste a credential first.');
+      return;
+    }
+    setState(() {
+      _checkingConnection = true;
+      _connectionResult = null;
+    });
+    final result = await checkBackendConnection(origin);
+    if (!mounted) return;
+    setState(() {
+      _checkingConnection = false;
+      _connectionResult = result;
+    });
+  }
+
   Future<void> _configureShipper() async {
     final ok = await RaspSecurityEventShipper.configureAndPersist(
       _credentialController.text.trim(),
@@ -516,6 +539,7 @@ class _SecurityDashboardState extends State<SecurityDashboard>
     if (!mounted) return;
     setState(() {
       _shipperConfigured = ok;
+      _connectionResult = null;
       if (ok) _replacingCredential = false;
       _lastShipError = ok ? null : 'Could not parse that credential JSON.';
     });
@@ -638,6 +662,9 @@ class _SecurityDashboardState extends State<SecurityDashboard>
                     onConfigure: _configureShipper,
                     onSyncNow: () => _session?.refreshNow(),
                     backendHost: RaspSecurityEventShipper.configuredBackendHost,
+                    connectionResult: _connectionResult,
+                    checkingConnection: _checkingConnection,
+                    onCheckConnection: _checkConnection,
                     replacing: _replacingCredential,
                     onReplace: () => setState(() => _replacingCredential = !_replacingCredential),
                   ),
@@ -860,6 +887,10 @@ class _BackendSyncCard extends StatelessWidget {
   final String? backendHost;
   final bool replacing;
   final VoidCallback onReplace;
+  /// Result of the last "Check connection", or null.
+  final String? connectionResult;
+  final bool checkingConnection;
+  final VoidCallback onCheckConnection;
 
   const _BackendSyncCard({
     required this.configured,
@@ -871,6 +902,9 @@ class _BackendSyncCard extends StatelessWidget {
     required this.backendHost,
     required this.replacing,
     required this.onReplace,
+    required this.connectionResult,
+    required this.checkingConnection,
+    required this.onCheckConnection,
   });
 
   @override
@@ -911,14 +945,21 @@ class _BackendSyncCard extends StatelessWidget {
             'backend, paste a credential from your own dashboard.',
             style: TextStyle(fontSize: 12, color: Colors.black54),
           ),
-          Align(
-            alignment: Alignment.centerLeft,
-            child: TextButton(
+          Wrap(spacing: 8, children: [
+            TextButton(
               key: const Key('replace-credential'),
               onPressed: onReplace,
               child: Text(replacing ? 'Cancel' : 'Change credential'),
             ),
-          ),
+            TextButton.icon(
+              key: const Key('check-connection'),
+              onPressed: checkingConnection ? null : onCheckConnection,
+              icon: const Icon(Icons.network_check, size: 18),
+              label: Text(checkingConnection ? 'Checking…' : 'Check connection'),
+            ),
+          ]),
+          if (connectionResult != null)
+            Text(connectionResult!, key: const Key('connection-result'), style: const TextStyle(fontSize: 12)),
           const SizedBox(height: 4),
         ],
         if (!configured || replacing) ...[
