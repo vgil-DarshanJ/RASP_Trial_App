@@ -14,6 +14,7 @@ import 'detector_catalog.dart';
 import 'build_config.dart';
 import 'debug_result_logger.dart';
 import 'detector_results_screen.dart';
+import 'fraud_risk_screen.dart';
 import 'geolocator_location_provider.dart';
 import 'test_reputation_list.dart';
 import 'threat_policy.dart';
@@ -108,6 +109,15 @@ RaspLeanConfig trialConfig({String? pinHost, List<String> pins = const [], Strin
   // Evidence envelopes (device-key signed) instead of legacy HMAC batches;
   // the first delivery registers this device with the backend.
   useEvidenceEnvelope: true,
+  // Task 8.1 fraud signals and the session risk / transaction API (the
+  // "Fraud risk" screen). The id-hash salt comes from the pasted credential
+  // (account_hash_salt); without it login/transaction report UNAVAILABLE.
+  remoteControlAppDetection: true,
+  screenSharingDetection: true,
+  otpInterceptionDetection: true,
+  smsReaderAbuseDetection: true,
+  otpForwardingDetection: true,
+  sessionRiskScoring: true,
 );
 
 class RaspTrialApp extends StatelessWidget {
@@ -547,6 +557,15 @@ class _SecurityDashboardState extends State<SecurityDashboard>
       appBar: AppBar(
         title: const Text('RASP Shield — Lean Trial'),
         actions: [
+          IconButton(
+            tooltip: 'Fraud risk',
+            icon: const Icon(Icons.payments_outlined),
+            onPressed: _session == null
+                ? null
+                : () => Navigator.of(context).push(MaterialPageRoute<void>(
+                      builder: (_) => FraudRiskScreen(session: _session!),
+                    )),
+          ),
           IconButton(
             tooltip: 'Detector results',
             icon: const Icon(Icons.list_alt),

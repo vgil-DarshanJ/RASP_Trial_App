@@ -27,6 +27,9 @@ const _flagFor = <String, String>{
   'overlay': 'overlayDetection', 'accessibility': 'accessibilityDetection',
   'external_display': 'externalDisplayDetection', 'screen_recording': 'screenRecordingDetection',
   'vishing_call': 'vishingCallDetection', 'third_party_keyboard': 'thirdPartyKeyboardDetection',
+  'remote_control_app': 'remoteControlAppDetection', 'screen_sharing_risk': 'screenSharingDetection',
+  'otp_interception_risk': 'otpInterceptionDetection', 'sms_reader_abuse': 'smsReaderAbuseDetection',
+  'otp_forwarding_risk': 'otpForwardingDetection',
 };
 
 void main() {
@@ -34,6 +37,12 @@ void main() {
 
   test('envelope mode is on', () {
     expect(map['useEvidenceEnvelope'], isTrue);
+  });
+
+  test('session risk scoring is on (Fraud risk screen); the salt comes from the credential, not the app', () {
+    expect(map['sessionRiskScoring'], isTrue);
+    expect(map['accountHashSalt'], isNull);
+    expect(map['highRiskTransactionMode'], isFalse);
   });
 
   test('every detector the results screen lists is enabled in the config', () {

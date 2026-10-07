@@ -12,6 +12,8 @@ const trialDetectorIds = <String>[
   'vpn', 'mitm', 'high_risk_ip', 'unsafe_wifi',
   'overlay', 'accessibility', 'external_display', 'screen_recording',
   'vishing_call', 'third_party_keyboard',
+  'remote_control_app', 'screen_sharing_risk', 'otp_interception_risk',
+  'sms_reader_abuse', 'otp_forwarding_risk',
   'risky_app',
 ];
 
