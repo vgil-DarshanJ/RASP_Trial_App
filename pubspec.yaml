@@ -49,6 +49,8 @@ dependencies:
   geolocator: ^13.0.1
   # Runtime request for READ_PHONE_STATE (sim_change, vishing_call) — Task 4.8.
   permission_handler: ^11.4.0
+  # Remembers the answer to the first-launch permission explanation — Task 9.2.
+  shared_preferences: ^2.5.5
 
 dev_dependencies:
   flutter_test:

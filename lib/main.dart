@@ -16,6 +16,7 @@ import 'debug_result_logger.dart';
 import 'detector_results_screen.dart';
 import 'fraud_risk_screen.dart';
 import 'geolocator_location_provider.dart';
+import 'permission_onboarding.dart';
 import 'test_reputation_list.dart';
 import 'threat_policy.dart';
 import 'trial_tools.dart';
@@ -283,6 +284,32 @@ class _SecurityDashboardState extends State<SecurityDashboard>
     _buildConfig = await TrialBuildConfig.load(rootBundle);
     await _startSession(_config());
     if (mounted && _shipperConfigured) setState(() => _lastSyncAt = DateTime.now());
+    await _maybeShowPermissionIntro();
+  }
+
+  /// First launch only: explains Phone state and (optional) Location, then
+  /// asks for Phone state on Continue. Location is never asked here — only
+  /// when "Share location" is switched on. The answer is stored, so this
+  /// shows once per install (if storage fails it shows again next launch).
+  Future<void> _maybeShowPermissionIntro() async {
+    String? answer;
+    try {
+      answer = await readPermissionIntroAnswer();
+    } catch (_) {
+      answer = null;
+    }
+    if (answer != null || !mounted) return;
+    final proceed = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const PermissionIntroDialog(),
+    );
+    try {
+      await savePermissionIntroAnswer(proceed == true ? 'continue' : 'not_now');
+    } catch (_) {
+      // Not remembered; the explanation shows again next launch.
+    }
+    if (proceed == true && mounted) await _grantPhonePermission();
   }
 
   RaspLeanConfig _config() => trialConfig(
@@ -349,6 +376,14 @@ class _SecurityDashboardState extends State<SecurityDashboard>
       _phonePermission = status;
       _phoneRecheck = 'Re-running the SIM and call checks…';
     });
+    if (isRefused(status)) {
+      unawaited(showPermissionRefusedDialog(
+        context,
+        what: 'Phone state',
+        status: status,
+        effect: 'SIM change and Call during app use stay UNAVAILABLE.',
+      ));
+    }
     final session = _session;
     if (session == null) return;
     // Wait for a SIM result observed after the answer — a tick that was
@@ -417,8 +452,11 @@ class _SecurityDashboardState extends State<SecurityDashboard>
     final status = await requestLocationPermission();
     if (!mounted) return;
     if (!status.isGranted && !status.isLimited) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Location permission not granted, so location is not shared.')),
+      await showPermissionRefusedDialog(
+        context,
+        what: 'Location',
+        status: status,
+        effect: 'Location permission not granted, so location is not shared.',
       );
       return;
     }
@@ -1202,7 +1240,7 @@ class _TrialChecksCard extends StatelessWidget {
             label: const Text('Grant permissions'),
           ),
           if (phonePermission == PermissionStatus.permanentlyDenied)
-            TextButton(onPressed: openAppSettings, child: const Text('Open app settings')),
+            TextButton(onPressed: openSettings, child: const Text('Open app settings')),
         ]),
         if (phoneRecheck != null)
           Padding(
