@@ -11,6 +11,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:rasp_shield/sdk/detectors/rasp_native_channel.dart';
 import 'package:rasp_trial/main.dart';
+import 'package:rasp_trial/permission_onboarding.dart';
 
 const _leanStateChannel = EventChannel('com.shieldsdk.security/lean_state');
 // Answered with "nothing stored", so the credential restore at startup
@@ -28,6 +29,10 @@ class FakeNative {
   final resultLogLines = <String>[];
   /// Answers plugin methods; `true` for anything it does not handle.
   Object? Function(String method, Object? arguments)? answer;
+  /// Answers saved for the first-launch permission explanation.
+  final savedIntroAnswers = <String>[];
+  /// How often "Open Settings" was used.
+  int settingsOpened = 0;
   late MockStreamHandlerEventSink events;
 
   List<String> get methods => [for (final c in calls) c.$1];
@@ -37,17 +42,30 @@ class FakeNative {
 /// Starts the app against [FakeNative] and waits until the lean session runs.
 /// [storedCredential]: what secure storage returns for the saved backend
 /// credential (a test value), so the app starts already configured.
+/// [introAnswer]: the stored answer to the first-launch permission
+/// explanation; `'continue'` (already answered) by default, `null` = first
+/// launch, so the explanation is shown.
 Future<FakeNative> bootTrialApp(
   WidgetTester tester, {
   PermissionStatus phoneStatus = PermissionStatus.denied,
   String? storedCredential,
+  String? introAnswer = 'continue',
 }) async {
   final native = FakeNative();
   MockStreamHandlerEventSink? events;
   final messenger = tester.binding.defaultBinaryMessenger;
   final originalRequest = requestPhonePermission;
   final originalStatus = phonePermissionStatus;
+  final originalReadIntro = readPermissionIntroAnswer;
+  final originalSaveIntro = savePermissionIntroAnswer;
+  final originalOpenSettings = openSettings;
   phonePermissionStatus = () async => phoneStatus;
+  readPermissionIntroAnswer = () async => native.savedIntroAnswers.isNotEmpty ? native.savedIntroAnswers.last : introAnswer;
+  savePermissionIntroAnswer = (answer) async => native.savedIntroAnswers.add(answer);
+  openSettings = () async {
+    native.settingsOpened++;
+    return true;
+  };
 
   RaspNativeChannel.testInvokeHandler = (method, arguments) async {
     native.calls.add((method, arguments));
@@ -74,6 +92,9 @@ Future<FakeNative> bootTrialApp(
     RaspNativeChannel.testInvokeHandler = null;
     requestPhonePermission = originalRequest;
     phonePermissionStatus = originalStatus;
+    readPermissionIntroAnswer = originalReadIntro;
+    savePermissionIntroAnswer = originalSaveIntro;
+    openSettings = originalOpenSettings;
     messenger.setMockStreamHandler(_leanStateChannel, null);
     messenger.setMockMethodCallHandler(SystemChannels.platform, null);
     messenger.setMockMethodCallHandler(_secureStorageChannel, null);
