@@ -35,7 +35,13 @@ class FakeNative {
 }
 
 /// Starts the app against [FakeNative] and waits until the lean session runs.
-Future<FakeNative> bootTrialApp(WidgetTester tester, {PermissionStatus phoneStatus = PermissionStatus.denied}) async {
+/// [storedCredential]: what secure storage returns for the saved backend
+/// credential (a test value), so the app starts already configured.
+Future<FakeNative> bootTrialApp(
+  WidgetTester tester, {
+  PermissionStatus phoneStatus = PermissionStatus.denied,
+  String? storedCredential,
+}) async {
   final native = FakeNative();
   MockStreamHandlerEventSink? events;
   final messenger = tester.binding.defaultBinaryMessenger;
@@ -58,7 +64,7 @@ Future<FakeNative> bootTrialApp(WidgetTester tester, {PermissionStatus phoneStat
     native.platformCalls.add(call.method);
     return null;
   });
-  messenger.setMockMethodCallHandler(_secureStorageChannel, (call) async => null);
+  messenger.setMockMethodCallHandler(_secureStorageChannel, (call) async => call.method == 'read' ? storedCredential : null);
   messenger.setMockMethodCallHandler(_resultLogChannel, (call) async {
     native.resultLogLines.add(call.arguments as String);
     return true;

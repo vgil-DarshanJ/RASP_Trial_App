@@ -205,6 +205,8 @@ class _SecurityDashboardState extends State<SecurityDashboard>
   // restart.
   final _credentialController = TextEditingController();
   bool _shipperConfigured = false;
+  /// Showing the paste field again to replace a configured credential.
+  bool _replacingCredential = false;
   String? _lastShipError;
   DateTime? _lastSyncAt;
 
@@ -466,8 +468,10 @@ class _SecurityDashboardState extends State<SecurityDashboard>
     if (!mounted) return;
     setState(() {
       _shipperConfigured = ok;
+      if (ok) _replacingCredential = false;
       _lastShipError = ok ? null : 'Could not parse that credential JSON.';
     });
+    if (ok) _credentialController.clear();
     if (ok) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Configured — syncing will now happen automatically.')),
@@ -576,6 +580,9 @@ class _SecurityDashboardState extends State<SecurityDashboard>
                     lastError: _lastShipError,
                     onConfigure: _configureShipper,
                     onSyncNow: () => _session?.refreshNow(),
+                    backendHost: RaspSecurityEventShipper.configuredBackendHost,
+                    replacing: _replacingCredential,
+                    onReplace: () => setState(() => _replacingCredential = !_replacingCredential),
                   ),
                   const SizedBox(height: 16),
                   _ScreenshotCard(
@@ -792,6 +799,10 @@ class _BackendSyncCard extends StatelessWidget {
   final String? lastError;
   final VoidCallback onConfigure;
   final VoidCallback onSyncNow;
+  /// host[:port] events go to (from the credential; never the key or secret).
+  final String? backendHost;
+  final bool replacing;
+  final VoidCallback onReplace;
 
   const _BackendSyncCard({
     required this.configured,
@@ -800,6 +811,9 @@ class _BackendSyncCard extends StatelessWidget {
     required this.lastError,
     required this.onConfigure,
     required this.onSyncNow,
+    required this.backendHost,
+    required this.replacing,
+    required this.onReplace,
   });
 
   @override
@@ -832,7 +846,25 @@ class _BackendSyncCard extends StatelessWidget {
           ],
         ),
         const SizedBox(height: 12),
-        if (!configured) ...[
+        if (configured) ...[
+          Text('Sending to: ${backendHost ?? "unknown"}', key: const Key('backend-host'),
+              style: const TextStyle(fontWeight: FontWeight.w600)),
+          const Text(
+            'Events go to the backend that issued the pasted credential. If this is not your '
+            'backend, paste a credential from your own dashboard.',
+            style: TextStyle(fontSize: 12, color: Colors.black54),
+          ),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton(
+              key: const Key('replace-credential'),
+              onPressed: onReplace,
+              child: Text(replacing ? 'Cancel' : 'Change credential'),
+            ),
+          ),
+          const SizedBox(height: 4),
+        ],
+        if (!configured || replacing) ...[
           const Text(
             'Paste the JSON credential downloaded from the RASP Shield '
             'platform (Applications → your app → download credential). '
