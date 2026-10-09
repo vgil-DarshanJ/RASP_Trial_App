@@ -1,0 +1,92 @@
+# Trial app CI (F-28): builds the engine into the runner's local Maven
+# repository, then the trial app's Dart tests, a debug APK and the Flutter
+# plugin's Kotlin unit tests — the same commands as the local verification.
+#
+# The three repositories are checked out side by side, as on the
+# development machine (Development/trial_app/rasp_trial, Development/sdk_rasp,
+# Development/rashield-sdk-publish). Set up once in this repository's
+# settings:
+#   variables  PLUGIN_REPOSITORY   e.g. owner/sdk_rasp
+#              ENGINE_REPOSITORY   e.g. owner/RASP_SDK_1
+#   secret     REPO_READ_TOKEN     fine-grained token with read access to both
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RUST_TOOLCHAIN: "1.99.0"
+  CARGO_NDK_VERSION: "4.1.2"
+  ANDROID_NDK_VERSION: "27.1.12297006"
+
+jobs:
+  trial-app:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout trial app
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: trial_app/rasp_trial
+
+      - name: Checkout plugin
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ vars.PLUGIN_REPOSITORY }}
+          token: ${{ secrets.REPO_READ_TOKEN }}
+          path: sdk_rasp
+
+      - name: Checkout engine
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ vars.ENGINE_REPOSITORY }}
+          token: ${{ secrets.REPO_READ_TOKEN }}
+          path: rashield-sdk-publish
+
+      - name: Java
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Rust, cargo-ndk and the NDK (engine build)
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal \
+            --target aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+          rustup default "$RUST_TOOLCHAIN"
+          cargo install cargo-ndk --version "$CARGO_NDK_VERSION" --locked
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$ANDROID_NDK_VERSION" > /dev/null
+
+      - name: Engine into the local Maven repository
+        working-directory: rashield-sdk-publish
+        run: ./gradlew --no-daemon publishToMavenLocal "-PraspEngineVersion=1.1.0-local"
+
+      - name: Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          channel: stable
+          flutter-version: "3.47.0"
+          cache: true
+
+      - name: Trial app Dart tests
+        working-directory: trial_app/rasp_trial
+        run: |
+          flutter pub get
+          flutter test
+
+      - name: Debug APK
+        working-directory: trial_app/rasp_trial
+        run: flutter build apk --debug
+
+      - name: Plugin Kotlin unit tests
+        working-directory: trial_app/rasp_trial/android
+        run: ./gradlew --no-daemon :rasp_shield:testDebugUnitTest
