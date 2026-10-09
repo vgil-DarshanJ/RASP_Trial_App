@@ -54,9 +54,17 @@ void main() {
     }
   });
 
-  test('malware_reputation gets the signed test list, which names the test package', () {
-    expect(map['malwareReputationListJson'], testReputationListJson);
-    expect(map['malwareReputationPublicKey'], testReputationPublicKey);
+  test('malware_reputation: by default the backend list (no bundled list, auto-update on)', () {
+    expect(map['malwareReputationListJson'], isNull);
+    expect(map['malwareReputationPublicKey'], isNull, reason: 'the key comes from the credential');
+    expect(map['malwareReputationAutoUpdate'], isTrue);
+  });
+
+  test('malware_reputation with the test switch gets the signed test list, which names the test package', () {
+    final testMap = trialConfig(useTestReputationList: true).toNativeMap();
+    expect(testMap['malwareReputationListJson'], testReputationListJson);
+    expect(testMap['malwareReputationPublicKey'], testReputationPublicKey);
+    expect(testMap['malwareReputationAutoUpdate'], isFalse);
     final outer = jsonDecode(testReputationListJson) as Map<String, dynamic>;
     final payload = jsonDecode(outer['payload'] as String) as Map<String, dynamic>;
     expect([for (final e in payload['entries'] as List) e['package']], [testReputationPackage]);

@@ -51,7 +51,14 @@ Future<PermissionStatus> Function() phonePermissionStatus = () => Permission.pho
 /// order in detector_catalog.dart (`trialDetectorIds`). [pinHost] and [pins]
 /// set the `mitm` SPKI pin (the "Trial checks" card); none by default.
 /// [expectedSigningCertSha256] comes from the build (TrialBuildConfig).
-RaspLeanConfig trialConfig({String? pinHost, List<String> pins = const [], String? expectedSigningCertSha256}) => RaspLeanConfig(
+/// [useTestReputationList]: the signed test list that names Chrome ("Trial
+/// checks" card) instead of the list from the backend.
+RaspLeanConfig trialConfig({
+  String? pinHost,
+  List<String> pins = const [],
+  String? expectedSigningCertSha256,
+  bool useTestReputationList = false,
+}) => RaspLeanConfig(
   // Original 4
   screenshotProtection: true,
   usbDetection: true,
@@ -95,7 +102,9 @@ RaspLeanConfig trialConfig({String? pinHost, List<String> pins = const [], Strin
   // Newer detectors (Tasks 3a-3c). sim_change and vishing_call need
   // READ_PHONE_STATE ("Grant permissions" in the Trial checks card);
   // mock_location needs location (granted in Settings). malware_reputation
-  // uses the signed test list from lib/test_reputation_list.dart.
+  // uses the backend's signed list (key from the credential), or, with the
+  // switch in the Trial checks card, the test list in
+  // lib/test_reputation_list.dart.
   mockLocationDetection: true,
   timeSpoofingDetection: true,
   unsafeWifiDetection: true,
@@ -106,8 +115,9 @@ RaspLeanConfig trialConfig({String? pinHost, List<String> pins = const [], Strin
   taskHijackDetection: true,
   deviceStateAttestationDetection: true,
   malwareReputationDetection: true,
-  malwareReputationListJson: testReputationListJson,
-  malwareReputationPublicKey: testReputationPublicKey,
+  malwareReputationListJson: useTestReputationList ? testReputationListJson : null,
+  malwareReputationPublicKey: useTestReputationList ? testReputationPublicKey : null,
+  malwareReputationAutoUpdate: !useTestReputationList,
   // Evidence envelopes (device-key signed) instead of legacy HMAC batches;
   // the first delivery registers this device with the backend.
   useEvidenceEnvelope: true,
@@ -203,6 +213,7 @@ class _SecurityDashboardState extends State<SecurityDashboard>
   /// The mitm SPKI pin the session runs with (none by default; not persisted).
   String? _pinHost;
   List<String> _pins = const [];
+  bool _useTestReputationList = false;
   final _pinHostController = TextEditingController();
   final _pinController = TextEditingController();
 
@@ -320,7 +331,13 @@ class _SecurityDashboardState extends State<SecurityDashboard>
         pinHost: _pinHost,
         pins: _pins,
         expectedSigningCertSha256: _buildConfig.expectedSigningCertSha256,
+        useTestReputationList: _useTestReputationList,
       );
+
+  Future<void> _setTestReputationList(bool on) async {
+    setState(() => _useTestReputationList = on);
+    await _restartSession();
+  }
 
   Future<void> _startSession(RaspLeanConfig config) async {
     final session = await RaspLeanSession.start(config);
@@ -707,6 +724,8 @@ class _SecurityDashboardState extends State<SecurityDashboard>
                     shareLocation: _shareLocation,
                     lastFix: _lastFix,
                     onShareLocationChanged: _setShareLocation,
+                    useTestReputationList: _useTestReputationList,
+                    onTestReputationListChanged: _setTestReputationList,
                   ),
                   const SizedBox(height: 16),
                   _ExtendedDetectorsCard(detectors: _state.extendedDetectors),
@@ -1245,6 +1264,8 @@ class _TrialChecksCard extends StatelessWidget {
   final bool shareLocation;
   final RaspLocationSnapshot? lastFix;
   final ValueChanged<bool> onShareLocationChanged;
+  final bool useTestReputationList;
+  final ValueChanged<bool> onTestReputationListChanged;
 
   const _TrialChecksCard({
     required this.state,
@@ -1261,6 +1282,8 @@ class _TrialChecksCard extends StatelessWidget {
     required this.shareLocation,
     required this.lastFix,
     required this.onShareLocationChanged,
+    required this.useTestReputationList,
+    required this.onTestReputationListChanged,
   });
 
   @override
@@ -1364,12 +1387,22 @@ class _TrialChecksCard extends StatelessWidget {
           style: hint,
         ),
         const Divider(height: 24),
-        Text('Malware reputation test list flags: $testReputationPackage',
-            style: const TextStyle(fontWeight: FontWeight.w600)),
+        SwitchListTile(
+          key: const Key('test-reputation-list'),
+          contentPadding: EdgeInsets.zero,
+          title: Text('Malware reputation: use the test list (flags $testReputationPackage)'),
+          value: useTestReputationList,
+          onChanged: onTestReputationListChanged,
+        ),
         Text('Result: ${detectorVerdict(state, 'malware_reputation')}', key: const Key('reputation-result')),
-        const Text(
-          'A harmless test entry. To flag another installed app: '
-          'node tool/make_test_reputation_list.js <package>, then rebuild.',
+        Text(
+          useTestReputationList
+              ? 'A harmless test entry, so you can see DETECTED. To flag another installed app: '
+                  'node tool/make_test_reputation_list.js <package>, then rebuild.'
+              : 'Off: the signed list from your backend (Backend Sync credential), checked once a day. '
+                  'UNAVAILABLE until the backend has a list and the credential carries its key; '
+                  'UNKNOWN while the list is empty.',
+          key: const Key('reputation-source'),
           style: hint,
         ),
       ],

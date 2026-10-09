@@ -112,13 +112,24 @@ void main() {
     expect(_text(tester, 'pin-status'), contains('none'));
   });
 
-  testWidgets('the card shows the reputation test list and its result', (tester) async {
+  testWidgets('the card shows the reputation result; the test-list switch restarts the session with the test list', (tester) async {
     final native = await bootTrialApp(tester);
     await emitState(tester, native, nativeState(detectors: {
       'malware_reputation': nativeCheck('malware_reputation', 'DETECTED'),
     }));
     await scrollTo(tester, find.byKey(const Key('reputation-result')));
     expect(_text(tester, 'reputation-result'), 'Result: DETECTED');
-    expect(find.text('Malware reputation test list flags: $testReputationPackage'), findsOneWidget);
+    expect(find.text('Malware reputation: use the test list (flags $testReputationPackage)'), findsOneWidget);
+    expect(_text(tester, 'reputation-source'), startsWith('Off: the signed list from your backend'));
+    final first = native.argumentsOf('startLeanSession').last as Map;
+    expect(first['malwareReputationListJson'], isNull);
+
+    await scrollTo(tester, find.byKey(const Key('test-reputation-list')));
+    await tester.tap(find.byKey(const Key('test-reputation-list')));
+    await _settle(tester);
+    final restarted = native.argumentsOf('startLeanSession').last as Map;
+    expect(restarted['malwareReputationListJson'], testReputationListJson);
+    expect(restarted['malwareReputationAutoUpdate'], isFalse);
+    expect(_text(tester, 'reputation-source'), startsWith('A harmless test entry'));
   });
 }
