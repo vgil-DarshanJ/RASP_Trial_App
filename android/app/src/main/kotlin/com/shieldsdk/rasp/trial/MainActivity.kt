@@ -1,4 +1,4 @@
-package com.example.rasp_trial
+package com.shieldsdk.rasp.trial
 
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
