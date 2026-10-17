@@ -4,7 +4,7 @@ allprojects {
         mavenCentral()
         mavenLocal()
         // RASP Shield's android_core is published via JitPack
-        // (com.github.Vedant0Nisar:RaShield-SDK — see :rasp_shield's own
+        // (com.github.vgil-DarshanJ:RASP_SDK_1 — see :rasp_shield's own
         // build.gradle.kts). Gradle resolves a project dependency's own
         // transitive external dependencies using the CONSUMING project's
         // repositories, not the library's — so this one line belongs
@@ -13,6 +13,10 @@ allprojects {
         // exact line in their own root build.gradle.kts (or the
         // dependencyResolutionManagement block in settings.gradle.kts,
         // depending on their project's Gradle template).
+        maven {
+            url = uri("https://jitpack.io")
+            content { includeGroup("com.github.vgil-DarshanJ") }
+        }
     }
 }
 
