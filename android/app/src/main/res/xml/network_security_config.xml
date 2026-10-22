@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Plain HTTP is allowed ONLY to the office RASP Shield backend on the LAN
+  (the pasted credential's ingestion_url, http://192.168.2.208:4444) and to
+  this phone itself (adb reverse tcp:4000 tcp:4000 during development).
+  Every other host must use HTTPS. Requests stay HMAC-signed and evidence
+  stays signed by the device key over HTTP, so they cannot be forged,
+  changed or replayed, but they are not encrypted: use this only on the
+  office's own WPA2/WPA3 Wi-Fi. A backend with HTTPS (BE/deploy/) needs no
+  entry here.
+  When this file exists, android:usesCleartextTraffic is ignored.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">192.168.2.208</domain>
+        <domain includeSubdomains="false">localhost</domain>
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <!-- Android emulator's address for the computer running it. -->
+        <domain includeSubdomains="false">10.0.2.2</domain>
+    </domain-config>
+</network-security-config>

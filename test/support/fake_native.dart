@@ -74,8 +74,10 @@ Future<FakeNative> bootTrialApp(
   messenger.setMockStreamHandler(
     _leanStateChannel,
     // Block body: the value onListen returns is sent back as the reply.
+    // A restarted session listens again; native.events follows the latest.
     MockStreamHandler.inline(onListen: (arguments, sink) {
       events = sink;
+      native.events = sink;
     }),
   );
   messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {

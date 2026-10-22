@@ -15,6 +15,9 @@ import 'backend_check.dart';
 import 'build_config.dart';
 import 'debug_result_logger.dart';
 import 'detector_results_screen.dart';
+import 'feature_catalog.dart';
+import 'feature_lab.dart';
+import 'feature_lab_screen.dart';
 import 'fraud_risk_screen.dart';
 import 'geolocator_location_provider.dart';
 import 'permission_onboarding.dart';
@@ -53,84 +56,100 @@ Future<PermissionStatus> Function() phonePermissionStatus = () => Permission.pho
 /// [expectedSigningCertSha256] comes from the build (TrialBuildConfig).
 /// [useTestReputationList]: the signed test list that names Chrome ("Trial
 /// checks" card) instead of the list from the backend.
+/// [enabledFeatures]: the feature ids switched on in the Feature lab
+/// (feature_catalog.dart); `null` = [defaultEnabledFeatureIds].
 RaspLeanConfig trialConfig({
   String? pinHost,
   List<String> pins = const [],
   String? expectedSigningCertSha256,
   bool useTestReputationList = false,
-}) => RaspLeanConfig(
-  // Original 4
-  screenshotProtection: true,
-  usbDetection: true,
-  adbDetection: true,
-  clipboardProtection: true,
-  clipboardAutoClear: true,
-  // Device integrity
-  rootDetection: true,
-  emulatorDetection: true,
-  deviceBindingCheck: true,
-  cloneDetection: true,
-  developerModeDetection: true,
-  deviceLockCheck: true,
-  secureHardwareCheck: true,
-  deviceFingerprintCheck: true,
-  // Runtime protection
-  fridaDetection: true,
-  debuggerDetection: true,
-  reverseEngineeringToolsDetection: true,
-  hookDetection: true,
-  riskyAppDetection: true,
-  // App integrity — tamper compares the signing certificate with the hash
-  // the Android build wrote to assets/generated/rasp_build.json (Task 6.0);
-  // without it tamper reports UNKNOWN "not configured". repackagingDetection
-  // stays off (tamper covers the certificate check).
-  tamperDetection: true,
-  expectedSigningCertSha256: expectedSigningCertSha256,
-  untrustedInstallSourceDetection: true,
-  // Network security — highRiskIpDetection asks the platform backend's
-  // GET /v1/ip-risk (HMAC-signed with the credential pasted in "Backend
-  // Sync"); UNAVAILABLE until a credential is configured.
-  vpnDetection: true,
-  mitmDetection: true,
-  certificatePinHost: pinHost,
-  certificatePins: pins,
-  highRiskIpDetection: true,
-  // Privacy & screen
-  overlayDetection: true,
-  accessibilityDetection: true,
-  externalDisplayDetection: true,
-  // Newer detectors (Tasks 3a-3c). sim_change and vishing_call need
-  // READ_PHONE_STATE ("Grant permissions" in the Trial checks card);
-  // mock_location needs location (granted in Settings). malware_reputation
-  // uses the backend's signed list (key from the credential), or, with the
-  // switch in the Trial checks card, the test list in
-  // lib/test_reputation_list.dart.
-  mockLocationDetection: true,
-  timeSpoofingDetection: true,
-  unsafeWifiDetection: true,
-  screenRecordingDetection: true,
-  vishingCallDetection: true,
-  simChangeDetection: true,
-  thirdPartyKeyboardDetection: true,
-  taskHijackDetection: true,
-  deviceStateAttestationDetection: true,
-  malwareReputationDetection: true,
-  malwareReputationListJson: useTestReputationList ? testReputationListJson : null,
-  malwareReputationPublicKey: useTestReputationList ? testReputationPublicKey : null,
-  malwareReputationAutoUpdate: !useTestReputationList,
-  // Evidence envelopes (device-key signed) instead of legacy HMAC batches;
-  // the first delivery registers this device with the backend.
-  useEvidenceEnvelope: true,
-  // Task 8.1 fraud signals and the session risk / transaction API (the
-  // "Fraud risk" screen). The id-hash salt comes from the pasted credential
-  // (account_hash_salt); without it login/transaction report UNAVAILABLE.
-  remoteControlAppDetection: true,
-  screenSharingDetection: true,
-  otpInterceptionDetection: true,
-  smsReaderAbuseDetection: true,
-  otpForwardingDetection: true,
-  sessionRiskScoring: true,
-);
+  Set<String>? enabledFeatures,
+}) {
+  final features = enabledFeatures ?? defaultEnabledFeatureIds;
+  bool on(String id) => features.contains(id);
+  return RaspLeanConfig(
+    // Original 4
+    screenshotProtection: on('screenshot_protection'),
+    usbDetection: on('usb_connection'),
+    adbDetection: on('adb_enabled'),
+    clipboardProtection: on('clipboard_protection'),
+    clipboardAutoClear: true,
+    // Device integrity
+    rootDetection: on('root_jailbreak'),
+    emulatorDetection: on('emulator'),
+    deviceBindingCheck: on('device_binding'),
+    cloneDetection: on('clone'),
+    developerModeDetection: on('developer_mode'),
+    deviceLockCheck: on('device_lock_missing'),
+    secureHardwareCheck: on('secure_hardware_unavailable'),
+    deviceFingerprintCheck: on('device_fingerprint'),
+    // Runtime protection
+    fridaDetection: on('frida'),
+    debuggerDetection: on('debugger'),
+    reverseEngineeringToolsDetection: on('re_tools'),
+    hookDetection: on('hook_detection'),
+    riskyAppDetection: on('risky_app'),
+    // App integrity — tamper compares the signing certificate with the hash
+    // the Android build wrote to assets/generated/rasp_build.json (Task 6.0);
+    // without it tamper reports UNKNOWN "not configured". repackage and
+    // screenshot_event start off (tamper covers the certificate check) and
+    // can be switched on in the Feature lab.
+    tamperDetection: on('tamper'),
+    expectedSigningCertSha256: expectedSigningCertSha256,
+    untrustedInstallSourceDetection: on('untrusted_install_source'),
+    repackagingDetection: on('repackage'),
+    // Network security — highRiskIpDetection asks the platform backend's
+    // GET /v1/ip-risk (HMAC-signed with the credential pasted in "Backend
+    // Sync"); UNAVAILABLE until a credential is configured.
+    vpnDetection: on('vpn'),
+    mitmDetection: on('mitm'),
+    certificatePinHost: pinHost,
+    certificatePins: pins,
+    highRiskIpDetection: on('high_risk_ip'),
+    // Privacy & screen
+    overlayDetection: on('overlay'),
+    accessibilityDetection: on('accessibility'),
+    externalDisplayDetection: on('external_display'),
+    // Android 14+, DETECT_SCREEN_CAPTURE (AndroidManifest.xml).
+    screenshotEventDetection: on('screenshot_event'),
+    // Newer detectors (Tasks 3a-3c). sim_change and vishing_call need
+    // READ_PHONE_STATE ("Grant permissions" in the Trial checks card);
+    // mock_location needs location (granted in Settings). malware_reputation
+    // uses the backend's signed list (key from the credential), or, with the
+    // switch in the Trial checks card, the test list in
+    // lib/test_reputation_list.dart.
+    mockLocationDetection: on('mock_location'),
+    timeSpoofingDetection: on('time_spoofing'),
+    unsafeWifiDetection: on('unsafe_wifi'),
+    screenRecordingDetection: on('screen_recording'),
+    vishingCallDetection: on('vishing_call'),
+    simChangeDetection: on('sim_change'),
+    thirdPartyKeyboardDetection: on('third_party_keyboard'),
+    taskHijackDetection: on('task_hijack'),
+    deviceStateAttestationDetection: on('device_state_attestation'),
+    malwareReputationDetection: on('malware_reputation'),
+    malwareReputationListJson: useTestReputationList ? testReputationListJson : null,
+    malwareReputationPublicKey: useTestReputationList ? testReputationPublicKey : null,
+    malwareReputationAutoUpdate: !useTestReputationList,
+    // Evidence envelopes (device-key signed) instead of legacy HMAC batches;
+    // the first delivery registers this device with the backend.
+    useEvidenceEnvelope: true,
+    // Task 8.1 fraud signals and the session risk / transaction API (the
+    // "Fraud risk" screen). The id-hash salt comes from the pasted credential
+    // (account_hash_salt); without it login/transaction report UNAVAILABLE.
+    remoteControlAppDetection: on('remote_control_app'),
+    screenSharingDetection: on('screen_sharing_risk'),
+    otpInterceptionDetection: on('otp_interception_risk'),
+    smsReaderAbuseDetection: on('sms_reader_abuse'),
+    otpForwardingDetection: on('otp_forwarding_risk'),
+    sessionRiskScoring: true,
+    // Task 10.0 signed remote configuration (GET /v1/config), verified with
+    // the credential's config_public_key; reported as remote_config_rejected.
+    // remoteManagedDetectors stays empty, so a remote config can change
+    // intervals and thresholds but never the Feature lab's on/off choices.
+    remoteConfigEnabled: on('remote_config_rejected'),
+  );
+}
 
 class RaspTrialApp extends StatelessWidget {
   const RaspTrialApp({super.key});
@@ -217,6 +236,10 @@ class _SecurityDashboardState extends State<SecurityDashboard>
   final _pinHostController = TextEditingController();
   final _pinController = TextEditingController();
 
+  // ── Feature lab ──────────────────────────────────────────────────────────
+  /// Which of the 43 features are on; changing it restarts the session.
+  final _lab = FeatureLab();
+
   // ── Backend sync (RaspSecurityEventShipper) ───────────────────────────────
   //
   // This is the ONLY new piece for talking to your platform backend. Paste
@@ -247,6 +270,16 @@ class _SecurityDashboardState extends State<SecurityDashboard>
     RaspSecurityEventShipper.onShipError = (reason) {
       if (mounted) setState(() => _lastShipError = reason);
     };
+    _lab
+      ..onEnabledChanged = _applyFeatures
+      ..onRefresh = (() async => _session?.refreshNow())
+      ..onRefreshRemoteConfig = (() async => _session?.refreshRemoteConfigNow())
+      ..onGrantPhonePermission = _grantPhonePermission
+      ..shareLocation = (() => _shareLocation)
+      ..onShareLocationChanged = (on) async {
+        await _setShareLocation(on);
+        _lab.ownerChanged();
+      };
     _bootstrap();
   }
 
@@ -260,6 +293,7 @@ class _SecurityDashboardState extends State<SecurityDashboard>
     _credentialController.dispose();
     _pinHostController.dispose();
     _pinController.dispose();
+    _lab.dispose();
     RaspSecurityEventShipper.onShipError = null;
     super.dispose();
   }
@@ -332,7 +366,18 @@ class _SecurityDashboardState extends State<SecurityDashboard>
         pins: _pins,
         expectedSigningCertSha256: _buildConfig.expectedSigningCertSha256,
         useTestReputationList: _useTestReputationList,
+        enabledFeatures: _lab.enabled,
       );
+
+  /// A feature was switched in the Feature lab: restart the session with it.
+  Future<void> _applyFeatures() async {
+    _lab.applying = true;
+    try {
+      await _restartSession();
+    } finally {
+      if (mounted) _lab.applying = false;
+    }
+  }
 
   Future<void> _setTestReputationList(bool on) async {
     setState(() => _useTestReputationList = on);
@@ -343,6 +388,7 @@ class _SecurityDashboardState extends State<SecurityDashboard>
     final session = await RaspLeanSession.start(config);
     _stateSub = session.stateStream.listen((state) {
       _resultLogger?.log(state);
+      _lab.update(state);
       if (mounted) setState(() => _state = state);
       _reactToStateChange(_previousLeanState, state);
       _previousLeanState = state;
@@ -356,14 +402,21 @@ class _SecurityDashboardState extends State<SecurityDashboard>
   }
 
   bool _restarting = false;
+  /// A restart was asked for while one ran (e.g. several features switched
+  /// quickly); it runs once more afterwards with the latest settings.
+  bool _restartAgain = false;
 
   /// Stops the session and starts it again with the current pin settings.
   /// Never hangs: dispose and start each wait at most 2 s for the native side
   /// (RaspLeanSession.nativeCallTimeout), then continue. A failure is shown
-  /// instead of leaving the screen without a session; a second tap while a
-  /// restart runs is ignored.
+  /// instead of leaving the screen without a session. A request while a
+  /// restart runs is not started in parallel: one more restart follows, so
+  /// the last settings always apply.
   Future<void> _restartSession() async {
-    if (_restarting) return;
+    if (_restarting) {
+      _restartAgain = true;
+      return;
+    }
     _restarting = true;
     try {
       final old = _session;
@@ -383,6 +436,10 @@ class _SecurityDashboardState extends State<SecurityDashboard>
       }
     } finally {
       _restarting = false;
+    }
+    if (_restartAgain && mounted) {
+      _restartAgain = false;
+      await _restartSession();
     }
   }
 
@@ -630,6 +687,10 @@ class _SecurityDashboardState extends State<SecurityDashboard>
     );
   }
 
+  void _openFeatureLab() => Navigator.of(context).push(MaterialPageRoute<void>(
+        builder: (_) => FeatureListScreen(lab: _lab),
+      ));
+
   @override
   Widget build(BuildContext context) {
     final warnings = postureWarnings(_state);
@@ -637,6 +698,11 @@ class _SecurityDashboardState extends State<SecurityDashboard>
       appBar: AppBar(
         title: const Text('RASP Shield — Lean Trial'),
         actions: [
+          IconButton(
+            tooltip: 'Feature lab',
+            icon: const Icon(Icons.apps),
+            onPressed: _session == null ? null : _openFeatureLab,
+          ),
           IconButton(
             tooltip: 'Fraud risk',
             icon: const Icon(Icons.payments_outlined),
@@ -671,6 +737,11 @@ class _SecurityDashboardState extends State<SecurityDashboard>
                     const SizedBox(height: 12),
                     _PostureWarningBanner(warnings: warnings),
                   ],
+                  const SizedBox(height: 16),
+                  _FeatureLabCard(
+                    lab: _lab,
+                    onOpen: _session == null ? null : _openFeatureLab,
+                  ),
                   const SizedBox(height: 16),
                   _BackendSyncCard(
                     configured: _shipperConfigured,
@@ -890,6 +961,51 @@ class _PostureWarningBanner extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+// ── Feature lab card ─────────────────────────────────────────────────────────
+//
+// Entry to the Feature lab: the 43 features, each with its own page to
+// enable or disable it and watch it detect (feature_lab_screen.dart).
+
+class _FeatureLabCard extends StatelessWidget {
+  final FeatureLab lab;
+  final VoidCallback? onOpen;
+
+  const _FeatureLabCard({required this.lab, required this.onOpen});
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: lab,
+      builder: (context, _) {
+        final enabled = allFeatureIds.where(lab.isEnabled).length;
+        final threats = allFeatureIds.where((id) => lab.isEnabled(id) && featureVerdict(lab.state, id).isThreat).length;
+        return _SectionCard(
+          title: 'Feature lab',
+          icon: Icons.apps,
+          children: [
+            Text('${allFeatureIds.length} on-device features — $enabled enabled, '
+                '$threats detected now.', key: const Key('feature-lab-summary')),
+            const Text(
+              'Open a feature to enable or disable it and see it detect live.',
+              style: TextStyle(fontSize: 12, color: Colors.black54),
+            ),
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerRight,
+              child: FilledButton.icon(
+                key: const Key('open-feature-lab'),
+                onPressed: onOpen,
+                icon: const Icon(Icons.apps),
+                label: const Text('Open Feature lab'),
+              ),
+            ),
+          ],
+        );
+      },
     );
   }
 }
