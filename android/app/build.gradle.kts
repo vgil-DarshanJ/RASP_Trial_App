@@ -35,16 +35,25 @@ android {
 
     // Release signing (Task 6.0): android/key.properties when present
     // (storeFile, storePassword, keyAlias, keyPassword — never committed, see
-    // .gitignore); otherwise the debug keys, so `flutter run --release` works.
+    // .gitignore), else the environment variables RASP_RELEASE_STORE_FILE,
+    // RASP_RELEASE_STORE_PASSWORD, RASP_RELEASE_KEY_ALIAS,
+    // RASP_RELEASE_KEY_PASSWORD (CI); otherwise the debug keys, so
+    // `flutter run --release` works. -PraspRequireReleaseKey=true makes a
+    // release build without a real key fail instead (docs/RELEASE_SIGNING.md).
     val keyProperties = rootProject.file("key.properties")
-    if (keyProperties.exists()) {
-        val props = Properties().apply { keyProperties.inputStream().use { load(it) } }
+    val props = Properties().apply { if (keyProperties.exists()) keyProperties.inputStream().use { load(it) } }
+    fun signingValue(property: String, env: String): String? =
+        props.getProperty(property)?.takeIf { it.isNotBlank() } ?: System.getenv(env)?.takeIf { it.isNotBlank() }
+    val releaseStoreFile = signingValue("storeFile", "RASP_RELEASE_STORE_FILE")
+    if (releaseStoreFile != null) {
         signingConfigs.create("release") {
-            storeFile = rootProject.file(props.getProperty("storeFile"))
-            storePassword = props.getProperty("storePassword")
-            keyAlias = props.getProperty("keyAlias")
-            keyPassword = props.getProperty("keyPassword")
+            storeFile = rootProject.file(releaseStoreFile)
+            storePassword = signingValue("storePassword", "RASP_RELEASE_STORE_PASSWORD")
+            keyAlias = signingValue("keyAlias", "RASP_RELEASE_KEY_ALIAS")
+            keyPassword = signingValue("keyPassword", "RASP_RELEASE_KEY_PASSWORD")
         }
+    } else if (providers.gradleProperty("raspRequireReleaseKey").orNull == "true") {
+        throw GradleException("raspRequireReleaseKey=true but no release key: create android/key.properties or set RASP_RELEASE_STORE_FILE (docs/RELEASE_SIGNING.md)")
     }
 
     buildTypes {

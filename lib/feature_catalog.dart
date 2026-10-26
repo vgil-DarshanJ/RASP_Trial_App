@@ -130,7 +130,7 @@ const trialFeatures = <TrialFeature>[
       howToShow: [
         'Enable the feature.',
         'Turn USB debugging on, or remove the screen lock: DETECTED, with the reason in the evidence.',
-        'Restore both: SECURE (a sideloaded test install still shows unknown_install_source).',
+        'An app installed with adb has no store installer, so it stays DETECTED (unknown_install_source). Installed from the Play Store with debugging off: SECURE.',
       ]),
   TrialFeature('device_state_attestation', Icons.verified,
       summary: 'Asks the phone\'s secure hardware to vouch for its boot state (locked bootloader, '

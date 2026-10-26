@@ -5,6 +5,8 @@
 // (recorded, nothing closes) and the READ_PHONE_STATE status. Everything
 // above the channels — the dashboard, the results screen, RaspLeanSession's
 // state decoding — is the real code.
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -123,8 +125,17 @@ Future<void> emitState(WidgetTester tester, FakeNative native, Map<String, Objec
 
 Future<void> scrollTo(WidgetTester tester, Finder finder) async {
   await tester.scrollUntilVisible(finder, 200, scrollable: find.byType(Scrollable).first);
-  await tester.ensureVisible(finder);
+  // Centred: right at the top edge a tap can miss the target.
+  unawaited(Scrollable.ensureVisible(tester.element(finder), alignment: 0.5));
   await tester.pump();
+}
+
+/// Opens a feature's page from the Feature lab, the app's home screen.
+Future<void> openFeature(WidgetTester tester, String id) async {
+  final tile = find.byKey(Key('feature-tile-$id'));
+  await scrollTo(tester, tile);
+  await tester.tap(tile);
+  await tester.pumpAndSettle();
 }
 
 /// One native lean-state emission, in the map shape the plugin decodes.

@@ -121,6 +121,7 @@ void main() {
     final native = await boot(tester);
     expect(requests, isEmpty);
     await emitState(tester, native, nativeState());
+    await openFeature(tester, 'mock_location');
     await scrollTo(tester, find.byKey(const Key('share-location')));
     await tester.tap(find.byKey(const Key('share-location')));
     await settle(tester);

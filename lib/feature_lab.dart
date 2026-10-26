@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
 import 'package:rasp_shield/sdk/core/core.dart' show DetectionStatus;
 import 'package:rasp_shield/sdk/lean_session.dart' show RaspLeanState;
 
@@ -41,13 +42,10 @@ class FeatureLab extends ChangeNotifier {
   /// refreshRemoteConfigNow), for the remote configuration page.
   Future<void> Function()? onRefreshRemoteConfig;
 
-  /// The main screen's "Grant permissions" (READ_PHONE_STATE), for the
-  /// SIM change and call pages.
-  Future<void> Function()? onGrantPhonePermission;
-
-  /// The main screen's "Share location" switch, for the mock location page.
-  Future<void> Function(bool on)? onShareLocationChanged;
-  bool Function()? shareLocation;
+  /// The controls a feature's page shows under "Try it" (phone permission,
+  /// share location, clipboard copy / paste, TLS pin, ...), built by the
+  /// owner from its own state. Empty or `null`: no "Try it" panel.
+  List<Widget> Function(BuildContext context, String id)? tryItPanel;
 
   /// Lets the pages rebuild after the owner changed something they show
   /// (e.g. location sharing).

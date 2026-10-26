@@ -150,8 +150,6 @@ void main() {
     final native = await bootTrialApp(tester);
     await emitState(tester, native, nativeState(detectors: {'vpn': nativeCheck('vpn', 'SECURE')}));
 
-    await tester.tap(find.byTooltip('Feature lab'));
-    await tester.pumpAndSettle();
     expect(find.text('Feature lab (43)'), findsOneWidget);
     expect(find.text('40 enabled · 3 off'), findsOneWidget);
 
@@ -203,8 +201,6 @@ void main() {
   testWidgets('every one of the 43 tiles opens its own page', (tester) async {
     final native = await bootTrialApp(tester);
     await emitState(tester, native, nativeState());
-    await tester.tap(find.byTooltip('Feature lab'));
-    await tester.pumpAndSettle();
 
     for (final id in featureDisplayOrder) {
       final tile = find.byKey(Key('feature-tile-$id'));
@@ -223,8 +219,6 @@ void main() {
       'and checks for a new config', (tester) async {
     final native = await bootTrialApp(tester);
     await emitState(tester, native, nativeState());
-    await tester.tap(find.byTooltip('Feature lab'));
-    await tester.pumpAndSettle();
 
     final tile = find.byKey(const Key('feature-tile-remote_config_rejected'));
     await scrollTo(tester, tile);

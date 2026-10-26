@@ -43,6 +43,7 @@ void main() {
       'sim_change': nativeCheck('sim_change', 'UNAVAILABLE', 'android.permission.READ_PHONE_STATE not granted to the host app'),
     }));
 
+    await openFeature(tester, 'sim_change');
     await scrollTo(tester, find.byKey(const Key('grant-permissions')));
     expect(_text(tester, 'phone-permission'), 'Phone permission (READ_PHONE_STATE): not granted');
     final before = native.calls.length;
@@ -60,6 +61,7 @@ void main() {
   testWidgets('Reset SIM baseline calls the native reset, then re-runs the checks', (tester) async {
     final native = await bootTrialApp(tester);
     await emitState(tester, native, nativeState());
+    await openFeature(tester, 'sim_change');
     await scrollTo(tester, find.byKey(const Key('reset-sim-baseline')));
     final before = native.calls.length;
     await tester.tap(find.byKey(const Key('reset-sim-baseline')));
@@ -73,6 +75,7 @@ void main() {
     final native = await bootTrialApp(tester);
     native.answer = (method, arguments) => method == 'resetSimBaseline' ? false : true;
     await emitState(tester, native, nativeState());
+    await openFeature(tester, 'sim_change');
     await scrollTo(tester, find.byKey(const Key('reset-sim-baseline')));
     await tester.tap(find.byKey(const Key('reset-sim-baseline')));
     await _settle(tester);
@@ -86,6 +89,7 @@ void main() {
     expect(first['certificatePinHost'], isNull);
     expect(first['certificatePins'], isEmpty);
 
+    await openFeature(tester, 'mitm');
     await scrollTo(tester, find.byKey(const Key('pin-host')));
     await tester.enterText(find.byKey(const Key('pin-host')), 'api.example.com');
     await scrollTo(tester, find.byKey(const Key('pin-value')));
@@ -117,9 +121,10 @@ void main() {
     await emitState(tester, native, nativeState(detectors: {
       'malware_reputation': nativeCheck('malware_reputation', 'DETECTED'),
     }));
+    await openFeature(tester, 'malware_reputation');
     await scrollTo(tester, find.byKey(const Key('reputation-result')));
     expect(_text(tester, 'reputation-result'), 'Result: DETECTED');
-    expect(find.text('Malware reputation: use the test list (flags $testReputationPackage)'), findsOneWidget);
+    expect(find.text('Use the test list (flags $testReputationPackage)'), findsOneWidget);
     expect(_text(tester, 'reputation-source'), startsWith('Off: the signed list from your backend'));
     final first = native.argumentsOf('startLeanSession').last as Map;
     expect(first['malwareReputationListJson'], isNull);

@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:rasp_shield/sdk/core/core.dart' show DetectionSeverity, DetectionStatus;
 import 'package:rasp_shield/sdk/lean_session.dart'
     show RaspDetectorDescriptor, RaspRemoteConfigStatus, RaspThreatCategoryHeading;
@@ -40,12 +39,15 @@ String _time(DateTime at) {
 
 // ── Feature list ─────────────────────────────────────────────────────────────
 
-/// The Feature lab: one tile per feature with its live status. Tapping a
-/// tile opens that feature's page with Enable / Disable.
+/// The Feature lab, the app's home: one tile per feature with its live
+/// status. Tapping a tile opens that feature's page with Enable / Disable.
+/// [header] goes above the list (e.g. Backend Sync), [actions] in the app bar.
 class FeatureListScreen extends StatelessWidget {
   final FeatureLab lab;
+  final List<Widget> actions;
+  final List<Widget> header;
 
-  const FeatureListScreen({super.key, required this.lab});
+  const FeatureListScreen({super.key, required this.lab, this.actions = const [], this.header = const []});
 
   @override
   Widget build(BuildContext context) {
@@ -66,27 +68,32 @@ class FeatureListScreen extends StatelessWidget {
                 icon: const Icon(Icons.refresh),
                 onPressed: () => lab.onRefresh?.call(),
               ),
+              ...actions,
             ],
           ),
-          body: ListView(
-            padding: const EdgeInsets.fromLTRB(12, 12, 12, 24),
-            children: [
-              _LabSummary(
-                total: featureDisplayOrder.length,
-                enabled: enabledCount,
-                threats: threats.length,
-                applying: lab.applying,
-                onEnableAll: () => lab.setManyEnabled(featureDisplayOrder, true),
-                onDisableAll: () => lab.setManyEnabled(featureDisplayOrder, false),
-              ),
-              for (final (heading, ids) in groupByCategory(featureDisplayOrder)) ...[
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(4, 16, 4, 6),
-                  child: Text(heading, style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold)),
+          body: RefreshIndicator(
+            onRefresh: () async => lab.onRefresh?.call(),
+            child: ListView(
+              padding: const EdgeInsets.fromLTRB(12, 12, 12, 24),
+              children: [
+                ...header,
+                _LabSummary(
+                  total: featureDisplayOrder.length,
+                  enabled: enabledCount,
+                  threats: threats.length,
+                  applying: lab.applying,
+                  onEnableAll: () => lab.setManyEnabled(featureDisplayOrder, true),
+                  onDisableAll: () => lab.setManyEnabled(featureDisplayOrder, false),
                 ),
-                for (final id in ids) _FeatureTile(lab: lab, id: id),
+                for (final (heading, ids) in groupByCategory(featureDisplayOrder)) ...[
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(4, 16, 4, 6),
+                    child: Text(heading, style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold)),
+                  ),
+                  for (final id in ids) _FeatureTile(lab: lab, id: id),
+                ],
               ],
-            ],
+            ),
           ),
         );
       },
@@ -325,63 +332,17 @@ class FeatureDetailScreen extends StatelessWidget {
     );
   }
 
-  /// Controls some features need to be shown on a phone.
+  /// Controls some features need to be shown on a phone: the owner's
+  /// "Try it" panel (FeatureLab.tryItPanel), or the remote config status.
   List<Widget> _extras(BuildContext context, bool enabled) {
+    final panel = lab.tryItPanel?.call(context, id) ?? const <Widget>[];
+    if (panel.isNotEmpty) {
+      return [
+        const SizedBox(height: 12),
+        _Section(title: 'Try it', children: panel),
+      ];
+    }
     switch (id) {
-      case 'sim_change':
-      case 'vishing_call':
-        if (lab.onGrantPhonePermission == null) return const [];
-        return [
-          const SizedBox(height: 12),
-          _Section(title: 'Try it', children: [
-            FilledButton.icon(
-              key: const Key('feature-grant-phone'),
-              onPressed: () => lab.onGrantPhonePermission!(),
-              icon: const Icon(Icons.phone_android),
-              label: const Text('Grant phone permission'),
-            ),
-          ]),
-        ];
-      case 'mock_location':
-        if (lab.onShareLocationChanged == null) return const [];
-        return [
-          const SizedBox(height: 12),
-          _Section(title: 'Try it', children: [
-            SwitchListTile(
-              key: const Key('feature-share-location'),
-              contentPadding: EdgeInsets.zero,
-              title: const Text('Share location'),
-              subtitle: const Text('Same switch as in the Trial checks card. Off by default, not saved.',
-                  style: TextStyle(fontSize: 12)),
-              value: lab.shareLocation?.call() ?? false,
-              onChanged: (on) => lab.onShareLocationChanged!(on),
-            ),
-          ]),
-        ];
-      case 'clipboard_protection':
-        return [
-          const SizedBox(height: 12),
-          _Section(title: 'Try it', children: [
-            const TextField(
-              key: Key('feature-clipboard-test'),
-              decoration: InputDecoration(
-                labelText: 'Test text — select it and copy',
-                border: OutlineInputBorder(),
-                isDense: true,
-              ),
-            ),
-            const SizedBox(height: 8),
-            OutlinedButton.icon(
-              key: const Key('feature-copy-sample'),
-              onPressed: () async {
-                await Clipboard.setData(const ClipboardData(text: 'ACCOUNT 1234 5678 9012'));
-                await lab.onRefresh?.call();
-              },
-              icon: const Icon(Icons.copy),
-              label: const Text('Copy a sample account number'),
-            ),
-          ]),
-        ];
       case 'remote_config_rejected':
         final version = lab.state.remoteConfigVersion;
         return [

@@ -598,7 +598,7 @@ packages:
       path: "../../sdk_rasp/flutter/rasp_shield_sdk"
       relative: true
     source: path
-    version: "1.1.0-local"
+    version: "1.1.0"
   record_use:
     dependency: transitive
     description:

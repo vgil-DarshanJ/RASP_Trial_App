@@ -2,15 +2,12 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart' show kDebugMode, visibleForTesting;
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart' show SystemNavigator, rootBundle;
+import 'package:flutter/services.dart' show Clipboard, ClipboardData, SystemNavigator, rootBundle;
 import 'package:permission_handler/permission_handler.dart';
-import 'package:rasp_shield/sdk/core/core.dart'
-    show DetectionResult, DetectionStatus, DetectionStatusX;
 import 'package:rasp_shield/sdk/events/security_event_shipper.dart';
 import 'package:rasp_shield/sdk/lean_session.dart';
 import 'package:rasp_shield/sdk/security_controls.dart';
 
-import 'detector_catalog.dart';
 import 'backend_check.dart';
 import 'build_config.dart';
 import 'debug_result_logger.dart';
@@ -215,6 +212,8 @@ class _SecurityDashboardState extends State<SecurityDashboard>
   RaspLeanState? _previousLeanState;
 
   final _clipboardTestController = TextEditingController();
+  /// Whether the running session guards the clipboard (see _startSession).
+  bool _clipboardGuarded = false;
 
   /// Trial setting, off by default: close the app (after a 5 s countdown)
   /// when USB debugging turns on. When off, developer options / ADB / USB
@@ -274,13 +273,16 @@ class _SecurityDashboardState extends State<SecurityDashboard>
       ..onEnabledChanged = _applyFeatures
       ..onRefresh = (() async => _session?.refreshNow())
       ..onRefreshRemoteConfig = (() async => _session?.refreshRemoteConfigNow())
-      ..onGrantPhonePermission = _grantPhonePermission
-      ..shareLocation = (() => _shareLocation)
-      ..onShareLocationChanged = (on) async {
-        await _setShareLocation(on);
-        _lab.ownerChanged();
-      };
+      ..tryItPanel = _tryItPanel;
     _bootstrap();
+  }
+
+  /// Every change here also rebuilds the Feature lab pages, whose "Try it"
+  /// panels are built from this state (_tryItPanel).
+  @override
+  void setState(VoidCallback fn) {
+    super.setState(fn);
+    _lab.ownerChanged();
   }
 
   @override
@@ -304,6 +306,9 @@ class _SecurityDashboardState extends State<SecurityDashboard>
     // the app was backgrounded; a stale cached value is a false sense of
     // security on a banking screen.
     if (state == AppLifecycleState.resumed) {
+      // Text copied in another app while this one was in the background
+      // would still be pastable here: wipe it while protection is on.
+      if (_lab.isEnabled('clipboard_protection')) unawaited(RaspSecurityControls.clearClipboard());
       _session?.refreshNow();
     }
   }
@@ -386,6 +391,12 @@ class _SecurityDashboardState extends State<SecurityDashboard>
 
   Future<void> _startSession(RaspLeanConfig config) async {
     final session = await RaspLeanSession.start(config);
+    // The guard clears only copies made after it starts; wipe what is
+    // already on the clipboard so nothing copied earlier can be pasted.
+    // Only when protection turns on — not on every restart, since any
+    // feature switched in the Feature lab restarts the session.
+    if (config.clipboardProtection && !_clipboardGuarded) await RaspSecurityControls.clearClipboard();
+    _clipboardGuarded = config.clipboardProtection;
     _stateSub = session.stateStream.listen((state) {
       _resultLogger?.log(state);
       _lab.update(state);
@@ -555,28 +566,11 @@ class _SecurityDashboardState extends State<SecurityDashboard>
 
   // ── Screenshot / video ───────────────────────────────────────────────────
 
-  Future<void> _toggleScreenshotProtection(bool enable) async {
-    if (enable) {
-      await RaspSecurityControls.enableScreenshotProtection();
-    } else {
-      await RaspSecurityControls.disableScreenshotProtection();
-    }
-    await _session?.refreshNow();
-  }
-
   // ── Clipboard ────────────────────────────────────────────────────────────
-
-  Future<void> _toggleClipboardProtection(bool enable) async {
-    if (enable) {
-      await RaspSecurityControls.enableClipboardProtection(autoClearOnCopy: true);
-    } else {
-      await RaspSecurityControls.disableClipboardProtection();
-    }
-    await _session?.refreshNow();
-  }
 
   Future<void> _clearClipboardNow() async {
     await RaspSecurityControls.clearClipboard();
+    setState(() => _pasteResult = null);
     await _session?.refreshNow();
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -666,12 +660,19 @@ class _SecurityDashboardState extends State<SecurityDashboard>
     if (current.clipboardEvidence.changeCount > 0) {
       _showBanner('Clipboard activity detected and cleared.');
     }
+
+    // Joining Wi-Fi gets a notice; an unsafe network (open, WEP, captive
+    // portal) gets a warning, and unsafe_wifi DETECTED reaches the
+    // dashboard as a medium alert with the next shipped event.
+    if (wifiChangeAlert(previous, current) case final wifi?) {
+      _showBanner(wifi.message, color: wifi.unsafe ? Colors.red.shade700 : Colors.blueGrey.shade700);
+    }
   }
 
-  void _showBanner(String message) {
+  void _showBanner(String message, {Color? color}) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message), backgroundColor: Colors.orange.shade800),
+      SnackBar(content: Text(message), backgroundColor: color ?? Colors.orange.shade800),
     );
   }
 
@@ -687,122 +688,358 @@ class _SecurityDashboardState extends State<SecurityDashboard>
     );
   }
 
-  void _openFeatureLab() => Navigator.of(context).push(MaterialPageRoute<void>(
-        builder: (_) => FeatureListScreen(lab: _lab),
-      ));
+  // ── Clipboard test (Clipboard Protection page) ───────────────────────────
+
+  /// What "Paste here" got the last time, or null before the first paste.
+  String? _pasteResult;
+
+  Future<void> _copyTestText() async {
+    final text = _clipboardTestController.text.trim();
+    await Clipboard.setData(ClipboardData(text: text.isEmpty ? 'ACCOUNT 1234 5678 9012' : text));
+    setState(() => _pasteResult = null);
+    await _session?.refreshNow();
+  }
+
+  /// Reads the clipboard the way a paste would: with protection on, the
+  /// copy has already been wiped, so this shows that nothing comes back.
+  Future<void> _pasteTestText() async {
+    final data = await Clipboard.getData(Clipboard.kTextPlain);
+    final text = data?.text ?? '';
+    if (!mounted) return;
+    setState(() => _pasteResult = text.isEmpty
+        ? 'Nothing to paste — the clipboard is empty.'
+        : 'Pasted: "$text"');
+  }
+
+  // ── Feature pages: "Try it" panels ───────────────────────────────────────
+
+  /// The controls a feature's page shows under "Try it", built from this
+  /// screen's state so they work exactly as they did on the old main screen.
+  /// Empty for features that need nothing beyond Enable / Disable.
+  List<Widget> _tryItPanel(BuildContext context, String id) {
+    const hint = TextStyle(fontSize: 12, color: Colors.black54);
+    final usb = _state.usb;
+    Widget row(String label, Widget pill) => Row(children: [Expanded(child: Text(label)), pill]);
+    Widget refresh() => Align(
+          alignment: Alignment.centerRight,
+          child: TextButton.icon(
+            onPressed: () => _session?.refreshNow(),
+            icon: const Icon(Icons.refresh),
+            label: const Text('Refresh now'),
+          ),
+        );
+    List<Widget> phonePermission({required bool simBaseline}) => [
+          Text('Phone permission (READ_PHONE_STATE): ${phonePermissionLabel(_phonePermission)}',
+              key: const Key('phone-permission')),
+          const Text('Needed by SIM change and Call during app use.', style: hint),
+          const SizedBox(height: 8),
+          Wrap(spacing: 8, children: [
+            FilledButton.icon(
+              key: const Key('grant-permissions'),
+              onPressed: _grantPhonePermission,
+              icon: const Icon(Icons.phone_android),
+              label: const Text('Grant permissions'),
+            ),
+            if (_phonePermission == PermissionStatus.permanentlyDenied)
+              TextButton(onPressed: openSettings, child: const Text('Open app settings')),
+          ]),
+          if (_phoneRecheck != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text(_phoneRecheck!, key: const Key('phone-recheck'), style: const TextStyle(fontSize: 13)),
+            ),
+          if (simBaseline && kDebugMode) ...[
+            const Divider(height: 24),
+            OutlinedButton.icon(
+              key: const Key('reset-sim-baseline'),
+              onPressed: _resetSimBaseline,
+              icon: const Icon(Icons.restart_alt),
+              label: const Text('Reset SIM baseline'),
+            ),
+            const Text(
+              'Debug builds only. The next check stores a new baseline and reports UNKNOWN "baseline stored".',
+              style: hint,
+            ),
+          ],
+        ];
+
+    switch (id) {
+      case 'screenshot_protection':
+        return [
+          row('Screenshots & screen recording',
+              _StatusPill(
+                state: triFrom(_lab.isEnabled(id) ? (_state.screenshotActive ?? true) : false),
+                yesLabel: 'Blocked',
+                noLabel: 'Not blocked',
+                yesIsGood: true,
+              )),
+          const SizedBox(height: 4),
+          const Text(
+            'FLAG_SECURE blocks both still screenshots and screen recording/casting. Take a screenshot '
+            'or start a recording now — it fails or shows black while the feature is enabled.',
+            style: hint,
+          ),
+        ];
+      case 'usb_connection':
+        return [
+          row('USB cable / dock connected',
+              _StatusPill(state: triFrom(usb.usbConnected), yesLabel: 'Connected', noLabel: 'Not connected')),
+          const SizedBox(height: 4),
+          Text('Connected USB device count: ${usb.connectedDeviceCount}', style: const TextStyle(fontSize: 13)),
+          refresh(),
+        ];
+      case 'adb_enabled':
+        return [
+          row('USB debugging (ADB) enabled',
+              _StatusPill(state: triFrom(usb.usbDebuggingEnabled), yesLabel: 'ADB ON', noLabel: 'ADB off')),
+          refresh(),
+          SwitchListTile(
+            key: const Key('close-on-usb-debugging'),
+            contentPadding: EdgeInsets.zero,
+            title: const Text('Close the app when USB debugging turns on'),
+            subtitle: const Text(
+              'Off by default. When off, developer options, ADB and USB only '
+              'show the warning banner. Applies the next time ADB turns on.',
+              style: TextStyle(fontSize: 12),
+            ),
+            value: _closeOnUsbDebugging,
+            onChanged: (value) => setState(() => _closeOnUsbDebugging = value),
+          ),
+        ];
+      case 'developer_mode':
+        return [
+          row('Developer options unlocked',
+              _StatusPill(state: triFrom(usb.developerModeEnabled), yesLabel: 'Unlocked', noLabel: 'Locked')),
+          refresh(),
+        ];
+      case 'clipboard_protection':
+        final evidence = _state.clipboardEvidence;
+        return [
+          row('Clipboard',
+              _StatusPill(
+                state: triFrom(_lab.isEnabled(id) ? (_state.clipboardActive ?? true) : false),
+                yesLabel: 'Guarding',
+                noLabel: 'Off',
+                yesIsGood: true,
+              )),
+          const SizedBox(height: 12),
+          TextField(
+            key: const Key('clipboard-test-field'),
+            controller: _clipboardTestController,
+            decoration: const InputDecoration(
+              labelText: 'Test text (empty: a sample account number)',
+              border: OutlineInputBorder(),
+              isDense: true,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Wrap(spacing: 8, runSpacing: 4, children: [
+            FilledButton.tonalIcon(
+              key: const Key('clipboard-copy'),
+              onPressed: _copyTestText,
+              icon: const Icon(Icons.copy),
+              label: const Text('Copy'),
+            ),
+            FilledButton.tonalIcon(
+              key: const Key('clipboard-paste'),
+              onPressed: _pasteTestText,
+              icon: const Icon(Icons.content_paste),
+              label: const Text('Paste here'),
+            ),
+            OutlinedButton.icon(
+              key: const Key('clipboard-clear'),
+              onPressed: _clearClipboardNow,
+              icon: const Icon(Icons.cleaning_services),
+              label: const Text('Clear clipboard now'),
+            ),
+          ]),
+          if (_pasteResult != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text(_pasteResult!,
+                  key: const Key('clipboard-paste-result'), style: const TextStyle(fontWeight: FontWeight.w600)),
+            ),
+          const SizedBox(height: 8),
+          Text(
+            'Copies observed since the last check: ${evidence.changeCount}'
+            '${evidence.lastChangeAt != null ? ' · last at ${evidence.lastChangeAt}' : ''}',
+            style: hint,
+          ),
+          const Text(
+            'Enabled: tap Copy (or select the text and copy it), then Paste here or paste in another app — '
+            'nothing comes back. Disabled: the copied text pastes normally. The app never reads what '
+            'was copied, only that a copy happened.',
+            style: TextStyle(fontSize: 12, fontStyle: FontStyle.italic),
+          ),
+        ];
+      case 'sim_change':
+        return phonePermission(simBaseline: true);
+      case 'vishing_call':
+        return phonePermission(simBaseline: false);
+      case 'mock_location':
+        return [
+          SwitchListTile(
+            key: const Key('share-location'),
+            contentPadding: EdgeInsets.zero,
+            title: const Text('Share location'),
+            subtitle: const Text(
+              'Off by default, not saved. When on, the app asks for location, reads a fix '
+              'every 15 s for mock_location, sends a location heartbeat every 60 s and '
+              'attaches the fix to events (marked location_opt_in). Off clears it on the '
+              'phone and on the backend.',
+              style: TextStyle(fontSize: 12),
+            ),
+            value: _shareLocation,
+            onChanged: _setShareLocation,
+          ),
+          if (_shareLocation) ...[
+            Text(
+              _lastFix == null
+                  ? 'No fix yet.'
+                  : 'Last fix: '
+                      '${_lastFix!.latitude.toStringAsFixed(3)}, ${_lastFix!.longitude.toStringAsFixed(3)} '
+                      '(mock flag: ${_lastFix!.isMock ?? "unknown"})',
+              key: const Key('last-fix'),
+              style: const TextStyle(fontSize: 12),
+            ),
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton.icon(
+                key: const Key('read-location-now'),
+                onPressed: _refreshLocation,
+                icon: const Icon(Icons.my_location),
+                label: const Text('Read location now'),
+              ),
+            ),
+          ],
+          Text(
+            locationHeartbeatLabel(_state.locationHeartbeat, sharing: _shareLocation),
+            key: const Key('location-heartbeat'),
+            style: const TextStyle(fontSize: 12),
+          ),
+          Text('Mock location: ${detectorVerdict(_state, "mock_location")}', key: const Key('mock-location-result')),
+        ];
+      case 'mitm':
+        return [
+          Text(
+            'TLS pin for mitm: ${_pinHost == null ? 'none (mitm reports pin_not_configured)' : '$_pinHost, ${_pins.length} pin(s)'}',
+            key: const Key('pin-status'),
+          ),
+          const SizedBox(height: 8),
+          TextField(
+            key: const Key('pin-host'),
+            controller: _pinHostController,
+            decoration: const InputDecoration(
+              labelText: 'Pinned host', hintText: 'api.example.com', border: OutlineInputBorder(), isDense: true,
+            ),
+          ),
+          const SizedBox(height: 8),
+          TextField(
+            key: const Key('pin-value'),
+            controller: _pinController,
+            decoration: const InputDecoration(
+              labelText: 'SPKI pin(s)', hintText: 'sha256/<Base64 of 32 bytes>, comma-separated', border: OutlineInputBorder(), isDense: true,
+            ),
+          ),
+          Wrap(spacing: 8, children: [
+            FilledButton(key: const Key('apply-pin'), onPressed: _applyPin, child: const Text('Apply pin')),
+            TextButton(key: const Key('clear-pin'), onPressed: _clearPin, child: const Text('No pin')),
+          ]),
+          const Text(
+            'A wrong pin makes mitm DETECTED and lists the pins the server really sent (observed_pin) '
+            'in the evidence; copy one to get a match.',
+            style: hint,
+          ),
+        ];
+      case 'malware_reputation':
+        return [
+          SwitchListTile(
+            key: const Key('test-reputation-list'),
+            contentPadding: EdgeInsets.zero,
+            title: Text('Use the test list (flags $testReputationPackage)'),
+            value: _useTestReputationList,
+            onChanged: _setTestReputationList,
+          ),
+          Text('Result: ${detectorVerdict(_state, 'malware_reputation')}', key: const Key('reputation-result')),
+          Text(
+            _useTestReputationList
+                ? 'A harmless test entry, so you can see DETECTED. To flag another installed app: '
+                    'node tool/make_test_reputation_list.js <package>, then rebuild.'
+                : 'Off: the signed list from your backend (Backend Sync credential), checked once a day. '
+                    'UNAVAILABLE until the backend has a list and the credential carries its key; '
+                    'UNKNOWN while the list is empty.',
+            key: const Key('reputation-source'),
+            style: hint,
+          ),
+        ];
+      case 'high_risk_ip':
+        return [
+          Text(
+            _shipperConfigured
+                ? 'Backend: ${RaspSecurityEventShipper.configuredBackendHost ?? "configured"}'
+                : 'Backend: not configured — paste a credential in Backend Sync on the Feature lab list.',
+            key: const Key('ip-risk-backend'),
+          ),
+        ];
+    }
+    return const [];
+  }
 
   @override
   Widget build(BuildContext context) {
+    final status = _integrationStatus;
+    if (status == null) {
+      return Scaffold(
+        appBar: AppBar(title: Text('Feature lab (${featureDisplayOrder.length})')),
+        body: const Center(child: CircularProgressIndicator()),
+      );
+    }
     final warnings = postureWarnings(_state);
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('RASP Shield — Lean Trial'),
-        actions: [
-          IconButton(
-            tooltip: 'Feature lab',
-            icon: const Icon(Icons.apps),
-            onPressed: _session == null ? null : _openFeatureLab,
-          ),
-          IconButton(
-            tooltip: 'Fraud risk',
-            icon: const Icon(Icons.payments_outlined),
-            onPressed: _session == null
-                ? null
-                : () => Navigator.of(context).push(MaterialPageRoute<void>(
-                      builder: (_) => FraudRiskScreen(session: _session!),
-                    )),
-          ),
-          IconButton(
-            tooltip: 'Detector results',
-            icon: const Icon(Icons.list_alt),
-            onPressed: _session == null
-                ? null
-                : () => Navigator.of(context).push(MaterialPageRoute<void>(
-                      builder: (_) => DetectorResultsScreen(session: _session!),
-                    )),
-          ),
+    return FeatureListScreen(
+      lab: _lab,
+      actions: [
+        IconButton(
+          tooltip: 'Fraud risk',
+          icon: const Icon(Icons.payments_outlined),
+          onPressed: _session == null
+              ? null
+              : () => Navigator.of(context).push(MaterialPageRoute<void>(
+                    builder: (_) => FraudRiskScreen(session: _session!),
+                  )),
+        ),
+        IconButton(
+          tooltip: 'Detector results',
+          icon: const Icon(Icons.list_alt),
+          onPressed: _session == null
+              ? null
+              : () => Navigator.of(context).push(MaterialPageRoute<void>(
+                    builder: (_) => DetectorResultsScreen(session: _session!),
+                  )),
+        ),
+      ],
+      header: [
+        _IntegrationBanner(status: status),
+        if (warnings.isNotEmpty) ...[
+          const SizedBox(height: 12),
+          _PostureWarningBanner(warnings: warnings),
         ],
-      ),
-      body: _integrationStatus == null
-          ? const Center(child: CircularProgressIndicator())
-          : RefreshIndicator(
-              onRefresh: () async {
-                await _session?.refreshNow();
-              },
-              child: ListView(
-                padding: const EdgeInsets.all(16),
-                children: [
-                  _IntegrationBanner(status: _integrationStatus!),
-                  if (warnings.isNotEmpty) ...[
-                    const SizedBox(height: 12),
-                    _PostureWarningBanner(warnings: warnings),
-                  ],
-                  const SizedBox(height: 16),
-                  _FeatureLabCard(
-                    lab: _lab,
-                    onOpen: _session == null ? null : _openFeatureLab,
-                  ),
-                  const SizedBox(height: 16),
-                  _BackendSyncCard(
-                    configured: _shipperConfigured,
-                    controller: _credentialController,
-                    lastSyncAt: _lastSyncAt,
-                    lastError: _lastShipError,
-                    onConfigure: _configureShipper,
-                    onSyncNow: () => _session?.refreshNow(),
-                    backendHost: RaspSecurityEventShipper.configuredBackendHost,
-                    connectionResult: _connectionResult,
-                    checkingConnection: _checkingConnection,
-                    onCheckConnection: _checkConnection,
-                    replacing: _replacingCredential,
-                    onReplace: () => setState(() => _replacingCredential = !_replacingCredential),
-                  ),
-                  const SizedBox(height: 16),
-                  _ScreenshotCard(
-                    active: _state.screenshotActive,
-                    onToggle: _toggleScreenshotProtection,
-                  ),
-                  const SizedBox(height: 16),
-                  _UsbCard(
-                    usb: _state.usb,
-                    onRefresh: () => _session?.refreshNow(),
-                    closeOnUsbDebugging: _closeOnUsbDebugging,
-                    onCloseOnUsbDebuggingChanged: (value) =>
-                        setState(() => _closeOnUsbDebugging = value),
-                  ),
-                  const SizedBox(height: 16),
-                  _ClipboardCard(
-                    active: _state.clipboardActive,
-                    evidence: _state.clipboardEvidence,
-                    controller: _clipboardTestController,
-                    onToggle: _toggleClipboardProtection,
-                    onClearNow: _clearClipboardNow,
-                    onRefresh: () => _session?.refreshNow(),
-                  ),
-                  const SizedBox(height: 16),
-                  _TrialChecksCard(
-                    state: _state,
-                    phonePermission: _phonePermission,
-                    phoneRecheck: _phoneRecheck,
-                    onGrantPhonePermission: _grantPhonePermission,
-                    onResetSimBaseline: _resetSimBaseline,
-                    pinHost: _pinHost,
-                    pins: _pins,
-                    pinHostController: _pinHostController,
-                    pinController: _pinController,
-                    onApplyPin: _applyPin,
-                    onClearPin: _clearPin,
-                    shareLocation: _shareLocation,
-                    lastFix: _lastFix,
-                    onShareLocationChanged: _setShareLocation,
-                    useTestReputationList: _useTestReputationList,
-                    onTestReputationListChanged: _setTestReputationList,
-                  ),
-                  const SizedBox(height: 16),
-                  _ExtendedDetectorsCard(detectors: _state.extendedDetectors),
-                ],
-              ),
-            ),
+        const SizedBox(height: 12),
+        _BackendSyncCard(
+          configured: _shipperConfigured,
+          controller: _credentialController,
+          lastSyncAt: _lastSyncAt,
+          lastError: _lastShipError,
+          onConfigure: _configureShipper,
+          onSyncNow: () => _session?.refreshNow(),
+          backendHost: RaspSecurityEventShipper.configuredBackendHost,
+          connectionResult: _connectionResult,
+          checkingConnection: _checkingConnection,
+          onCheckConnection: _checkConnection,
+          replacing: _replacingCredential,
+          onReplace: () => setState(() => _replacingCredential = !_replacingCredential),
+        ),
+        const SizedBox(height: 4),
+      ],
     );
   }
 }
@@ -965,51 +1202,6 @@ class _PostureWarningBanner extends StatelessWidget {
   }
 }
 
-// ── Feature lab card ─────────────────────────────────────────────────────────
-//
-// Entry to the Feature lab: the 43 features, each with its own page to
-// enable or disable it and watch it detect (feature_lab_screen.dart).
-
-class _FeatureLabCard extends StatelessWidget {
-  final FeatureLab lab;
-  final VoidCallback? onOpen;
-
-  const _FeatureLabCard({required this.lab, required this.onOpen});
-
-  @override
-  Widget build(BuildContext context) {
-    return ListenableBuilder(
-      listenable: lab,
-      builder: (context, _) {
-        final enabled = allFeatureIds.where(lab.isEnabled).length;
-        final threats = allFeatureIds.where((id) => lab.isEnabled(id) && featureVerdict(lab.state, id).isThreat).length;
-        return _SectionCard(
-          title: 'Feature lab',
-          icon: Icons.apps,
-          children: [
-            Text('${allFeatureIds.length} on-device features — $enabled enabled, '
-                '$threats detected now.', key: const Key('feature-lab-summary')),
-            const Text(
-              'Open a feature to enable or disable it and see it detect live.',
-              style: TextStyle(fontSize: 12, color: Colors.black54),
-            ),
-            const SizedBox(height: 8),
-            Align(
-              alignment: Alignment.centerRight,
-              child: FilledButton.icon(
-                key: const Key('open-feature-lab'),
-                onPressed: onOpen,
-                icon: const Icon(Icons.apps),
-                label: const Text('Open Feature lab'),
-              ),
-            ),
-          ],
-        );
-      },
-    );
-  }
-}
-
 // ── Backend sync card ────────────────────────────────────────────────────────
 
 class _BackendSyncCard extends StatelessWidget {
@@ -1147,385 +1339,6 @@ class _BackendSyncCard extends StatelessWidget {
   }
 }
 
-// ── Screenshot / video card ─────────────────────────────────────────────────
-
-class _ScreenshotCard extends StatelessWidget {
-  final bool? active;
-  final ValueChanged<bool> onToggle;
-
-  const _ScreenshotCard({required this.active, required this.onToggle});
-
-  @override
-  Widget build(BuildContext context) {
-    return _SectionCard(
-      title: 'Screenshot & Video Block',
-      icon: Icons.screenshot_monitor,
-      children: [
-        const Text(
-          'FLAG_SECURE blocks BOTH still screenshots and screen recording/'
-          'casting with one control — there is no separate video toggle.',
-          style: TextStyle(fontSize: 13, color: Colors.black54),
-        ),
-        const SizedBox(height: 12),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            _StatusPill(
-              state: triFrom(active),
-              yesLabel: 'Blocked',
-              noLabel: 'Not blocked',
-            ),
-            Switch(
-              value: active ?? false,
-              onChanged: onToggle,
-            ),
-          ],
-        ),
-        const SizedBox(height: 4),
-        const Text(
-          'Try it: take a screenshot or start a screen recording right now '
-          '— it should fail / show black while this is ON.',
-          style: TextStyle(fontSize: 12, fontStyle: FontStyle.italic),
-        ),
-      ],
-    );
-  }
-}
-
-// ── USB / ADB card ──────────────────────────────────────────────────────────
-
-class _UsbCard extends StatelessWidget {
-  final RaspUsbState usb;
-  final VoidCallback onRefresh;
-  final bool closeOnUsbDebugging;
-  final ValueChanged<bool> onCloseOnUsbDebuggingChanged;
-
-  const _UsbCard({
-    required this.usb,
-    required this.onRefresh,
-    required this.closeOnUsbDebugging,
-    required this.onCloseOnUsbDebuggingChanged,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return _SectionCard(
-      title: 'USB & USB Debugging',
-      icon: Icons.usb,
-      children: [
-        Row(
-          children: [
-            const Expanded(child: Text('USB cable / dock connected')),
-            _StatusPill(
-              state: triFrom(usb.usbConnected),
-              yesLabel: 'Connected',
-              noLabel: 'Not connected',
-            ),
-          ],
-        ),
-        const SizedBox(height: 8),
-        Row(
-          children: [
-            const Expanded(child: Text('USB debugging (ADB) enabled')),
-            _StatusPill(
-              state: triFrom(usb.usbDebuggingEnabled),
-              yesLabel: 'ADB ON',
-              noLabel: 'ADB off',
-            ),
-          ],
-        ),
-        const SizedBox(height: 8),
-        Row(
-          children: [
-            const Expanded(child: Text('Developer options unlocked')),
-            _StatusPill(
-              state: triFrom(usb.developerModeEnabled),
-              yesLabel: 'Unlocked',
-              noLabel: 'Locked',
-            ),
-          ],
-        ),
-        const SizedBox(height: 8),
-        Text('Connected USB device count: ${usb.connectedDeviceCount}',
-            style: const TextStyle(fontSize: 13)),
-        const SizedBox(height: 8),
-        Align(
-          alignment: Alignment.centerRight,
-          child: TextButton.icon(
-            onPressed: onRefresh,
-            icon: const Icon(Icons.refresh),
-            label: const Text('Refresh now'),
-          ),
-        ),
-        const Text(
-          'Auto-refreshes every 4s and on app resume. Detection only — '
-          'Android has no API to block ADB/USB; decide your own policy '
-          '(e.g. step-up auth, block transaction) when these fire.',
-          style: TextStyle(fontSize: 12, fontStyle: FontStyle.italic),
-        ),
-        const SizedBox(height: 8),
-        SwitchListTile(
-          key: const Key('close-on-usb-debugging'),
-          contentPadding: EdgeInsets.zero,
-          title: const Text('Close the app when USB debugging turns on'),
-          subtitle: const Text(
-            'Off by default. When off, developer options, ADB and USB only '
-            'show the warning banner. Applies the next time ADB turns on.',
-            style: TextStyle(fontSize: 12),
-          ),
-          value: closeOnUsbDebugging,
-          onChanged: onCloseOnUsbDebuggingChanged,
-        ),
-      ],
-    );
-  }
-}
-
-// ── Clipboard card ───────────────────────────────────────────────────────────
-
-class _ClipboardCard extends StatelessWidget {
-  final bool? active;
-  final RaspClipboardEvidence evidence;
-  final TextEditingController controller;
-  final ValueChanged<bool> onToggle;
-  final VoidCallback onClearNow;
-  final VoidCallback onRefresh;
-
-  const _ClipboardCard({
-    required this.active,
-    required this.evidence,
-    required this.controller,
-    required this.onToggle,
-    required this.onClearNow,
-    required this.onRefresh,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return _SectionCard(
-      title: 'Clipboard Protection',
-      icon: Icons.content_paste_off,
-      children: [
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            _StatusPill(
-              state: triFrom(active),
-              yesLabel: 'Guarding',
-              noLabel: 'Off',
-              yesIsGood: true,
-            ),
-            Switch(value: active ?? false, onChanged: onToggle),
-          ],
-        ),
-        const SizedBox(height: 12),
-        TextField(
-          controller: controller,
-          decoration: const InputDecoration(
-            labelText: 'Test text — select it and tap Copy',
-            border: OutlineInputBorder(),
-          ),
-        ),
-        const SizedBox(height: 8),
-        Wrap(
-          spacing: 8,
-          children: [
-            OutlinedButton.icon(
-              onPressed: onClearNow,
-              icon: const Icon(Icons.cleaning_services),
-              label: const Text('Clear clipboard now'),
-            ),
-            OutlinedButton.icon(
-              onPressed: onRefresh,
-              icon: const Icon(Icons.refresh),
-              label: const Text('Refresh evidence'),
-            ),
-          ],
-        ),
-        const SizedBox(height: 8),
-        Text(
-          'Copies observed since last read: ${evidence.changeCount}   '
-          '${evidence.lastChangeAt != null ? "· last at ${evidence.lastChangeAt}" : ""}',
-          style: const TextStyle(fontSize: 12, color: Colors.black54),
-        ),
-        const Text(
-          'With guarding ON: copy the text above, then try pasting anywhere '
-          '— it should paste empty. Never reads the actual clipboard '
-          'content, only that a change happened.',
-          style: TextStyle(fontSize: 12, fontStyle: FontStyle.italic),
-        ),
-      ],
-    );
-  }
-}
-
-// ── Trial checks card ────────────────────────────────────────────────────────
-//
-// Controls for trying sim_change, vishing_call, mitm and malware_reputation
-// on a phone: the READ_PHONE_STATE request, the debug-only SIM baseline
-// reset, the mitm SPKI pin, and the test reputation list's result.
-
-class _TrialChecksCard extends StatelessWidget {
-  final RaspLeanState state;
-  final PermissionStatus? phonePermission;
-  final String? phoneRecheck;
-  final VoidCallback onGrantPhonePermission;
-  final VoidCallback onResetSimBaseline;
-  final String? pinHost;
-  final List<String> pins;
-  final TextEditingController pinHostController;
-  final TextEditingController pinController;
-  final VoidCallback onApplyPin;
-  final VoidCallback onClearPin;
-  final bool shareLocation;
-  final RaspLocationSnapshot? lastFix;
-  final ValueChanged<bool> onShareLocationChanged;
-  final bool useTestReputationList;
-  final ValueChanged<bool> onTestReputationListChanged;
-
-  const _TrialChecksCard({
-    required this.state,
-    required this.phonePermission,
-    required this.phoneRecheck,
-    required this.onGrantPhonePermission,
-    required this.onResetSimBaseline,
-    required this.pinHost,
-    required this.pins,
-    required this.pinHostController,
-    required this.pinController,
-    required this.onApplyPin,
-    required this.onClearPin,
-    required this.shareLocation,
-    required this.lastFix,
-    required this.onShareLocationChanged,
-    required this.useTestReputationList,
-    required this.onTestReputationListChanged,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    const hint = TextStyle(fontSize: 12, color: Colors.black54);
-    return _SectionCard(
-      title: 'Trial checks',
-      icon: Icons.science_outlined,
-      children: [
-        Text('Phone permission (READ_PHONE_STATE): ${phonePermissionLabel(phonePermission)}',
-            key: const Key('phone-permission')),
-        const Text('Needed by SIM change and Call during app use.', style: hint),
-        const SizedBox(height: 8),
-        Wrap(spacing: 8, children: [
-          FilledButton.icon(
-            key: const Key('grant-permissions'),
-            onPressed: onGrantPhonePermission,
-            icon: const Icon(Icons.phone_android),
-            label: const Text('Grant permissions'),
-          ),
-          if (phonePermission == PermissionStatus.permanentlyDenied)
-            TextButton(onPressed: openSettings, child: const Text('Open app settings')),
-        ]),
-        if (phoneRecheck != null)
-          Padding(
-            padding: const EdgeInsets.only(top: 6),
-            child: Text(phoneRecheck!, key: const Key('phone-recheck'), style: const TextStyle(fontSize: 13)),
-          ),
-        if (kDebugMode) ...[
-          const Divider(height: 24),
-          OutlinedButton.icon(
-            key: const Key('reset-sim-baseline'),
-            onPressed: onResetSimBaseline,
-            icon: const Icon(Icons.restart_alt),
-            label: const Text('Reset SIM baseline'),
-          ),
-          const Text(
-            'Debug builds only. The next check stores a new baseline and reports UNKNOWN "baseline stored".',
-            style: hint,
-          ),
-        ],
-        const Divider(height: 24),
-        SwitchListTile(
-          key: const Key('share-location'),
-          contentPadding: EdgeInsets.zero,
-          title: const Text('Share location'),
-          subtitle: const Text(
-            'Off by default, not saved. When on, the app asks for location, reads a fix '
-            'every 15 s for mock_location, sends a location heartbeat every 60 s and '
-            'attaches the fix to events (marked location_opt_in). Off clears it on the '
-            'phone and on the backend.',
-            style: TextStyle(fontSize: 12),
-          ),
-          value: shareLocation,
-          onChanged: onShareLocationChanged,
-        ),
-        if (shareLocation)
-          Text(
-            lastFix == null
-                ? 'No fix yet.'
-                : 'Last fix: '
-                    '${lastFix!.latitude.toStringAsFixed(3)}, ${lastFix!.longitude.toStringAsFixed(3)} '
-                    '(mock flag: ${lastFix!.isMock ?? "unknown"})',
-            key: const Key('last-fix'),
-            style: const TextStyle(fontSize: 12),
-          ),
-        Text(
-          locationHeartbeatLabel(state.locationHeartbeat, sharing: shareLocation),
-          key: const Key('location-heartbeat'),
-          style: const TextStyle(fontSize: 12),
-        ),
-        Text('Mock location: ${detectorVerdict(state, "mock_location")}', key: const Key('mock-location-result')),
-        const Divider(height: 24),
-        Text(
-          'TLS pin for mitm: ${pinHost == null ? 'none (mitm reports pin_not_configured)' : '$pinHost, ${pins.length} pin(s)'}',
-          key: const Key('pin-status'),
-        ),
-        const SizedBox(height: 8),
-        TextField(
-          key: const Key('pin-host'),
-          controller: pinHostController,
-          decoration: const InputDecoration(
-            labelText: 'Pinned host', hintText: 'api.example.com', border: OutlineInputBorder(), isDense: true,
-          ),
-        ),
-        const SizedBox(height: 8),
-        TextField(
-          key: const Key('pin-value'),
-          controller: pinController,
-          decoration: const InputDecoration(
-            labelText: 'SPKI pin(s)', hintText: 'sha256/<Base64 of 32 bytes>, comma-separated', border: OutlineInputBorder(), isDense: true,
-          ),
-        ),
-        Wrap(spacing: 8, children: [
-          FilledButton(key: const Key('apply-pin'), onPressed: onApplyPin, child: const Text('Apply pin')),
-          TextButton(key: const Key('clear-pin'), onPressed: onClearPin, child: const Text('No pin')),
-        ]),
-        const Text(
-          'A wrong pin makes mitm DETECTED and lists the pins the server really sent (observed_pin) '
-          'on the results screen; copy one to get a match.',
-          style: hint,
-        ),
-        const Divider(height: 24),
-        SwitchListTile(
-          key: const Key('test-reputation-list'),
-          contentPadding: EdgeInsets.zero,
-          title: Text('Malware reputation: use the test list (flags $testReputationPackage)'),
-          value: useTestReputationList,
-          onChanged: onTestReputationListChanged,
-        ),
-        Text('Result: ${detectorVerdict(state, 'malware_reputation')}', key: const Key('reputation-result')),
-        Text(
-          useTestReputationList
-              ? 'A harmless test entry, so you can see DETECTED. To flag another installed app: '
-                  'node tool/make_test_reputation_list.js <package>, then rebuild.'
-              : 'Off: the signed list from your backend (Backend Sync credential), checked once a day. '
-                  'UNAVAILABLE until the backend has a list and the credential carries its key; '
-                  'UNKNOWN while the list is empty.',
-          key: const Key('reputation-source'),
-          style: hint,
-        ),
-      ],
-    );
-  }
-}
-
 // ── Threat countdown dialog ──────────────────────────────────────────────────
 //
 // A plain Timer.periodic must NOT live inside a StatefulBuilder's `builder`
@@ -1584,103 +1397,6 @@ class _ThreatCountdownDialogState extends State<_ThreatCountdownDialog> {
       content: Text(
         '${widget.message}\n\nClosing this app in $_secondsLeft '
         'second${_secondsLeft == 1 ? '' : 's'}.',
-      ),
-    );
-  }
-}
-
-// ── Extended detectors card ─────────────────────────────────────────────────
-//
-// Everything beyond the original 4 lean controls — real values from
-// `RaspLeanSession`'s `extendedDetectors` map, with the same category
-// headings, order and names as the results screen (detector_catalog.dart).
-// Nothing here is placeholder data: an entry only appears once its detector
-// has actually returned a result.
-
-class _ExtendedDetectorsCard extends StatelessWidget {
-  final Map<String, DetectionResult> detectors;
-
-  const _ExtendedDetectorsCard({required this.detectors});
-
-  @override
-  Widget build(BuildContext context) {
-    if (detectors.isEmpty) return const SizedBox.shrink();
-
-    final threatCount = detectors.values.where((r) => r.status.isThreat).length;
-
-    return _SectionCard(
-      title: 'Extended Detectors (${detectors.length})',
-      icon: Icons.shield_outlined,
-      children: [
-        Text(
-          threatCount > 0
-              ? '$threatCount finding${threatCount == 1 ? '' : 's'} detected'
-              : 'No findings — every enabled detector reports secure or unavailable.',
-          style: TextStyle(
-            color: threatCount > 0 ? Colors.red : Colors.black54,
-            fontWeight: threatCount > 0 ? FontWeight.bold : FontWeight.normal,
-            fontSize: 13,
-          ),
-        ),
-        for (final (heading, ids) in groupByCategory(reportedDetectorIds(detectors.keys))) ...[
-          Padding(
-            padding: const EdgeInsets.only(top: 12, bottom: 4),
-            child: Text(
-              heading,
-              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
-            ),
-          ),
-          for (final id in ids) _ExtendedDetectorRow(id: id, result: detectors[id]!),
-        ],
-      ],
-    );
-  }
-}
-
-class _ExtendedDetectorRow extends StatelessWidget {
-  final String id;
-  final DetectionResult result;
-
-  const _ExtendedDetectorRow({required this.id, required this.result});
-
-  @override
-  Widget build(BuildContext context) {
-    final threat = result.status.isThreat;
-    final (Color color, IconData icon, String label) = switch (result.status) {
-      DetectionStatus.detected => (Colors.red, Icons.warning_amber_rounded, 'Detected'),
-      DetectionStatus.secure => (Colors.green, Icons.check_circle, 'Secure'),
-      DetectionStatus.unavailable => (Colors.grey, Icons.help_outline, 'Unavailable'),
-      DetectionStatus.unknown => (Colors.orange, Icons.question_mark, 'Unknown'),
-      DetectionStatus.error => (Colors.orange, Icons.error_outline, 'Error'),
-    };
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 3),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(icon, color: color, size: 16),
-          const SizedBox(width: 6),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  detectorName(id),
-                  style: TextStyle(
-                    fontWeight: threat ? FontWeight.bold : FontWeight.normal,
-                    fontSize: 13,
-                  ),
-                ),
-                if (result.unavailableReason != null)
-                  Text(
-                    result.unavailableReason!,
-                    style: const TextStyle(fontSize: 11, color: Colors.black45),
-                  ),
-              ],
-            ),
-          ),
-          Text(label, style: TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.w600)),
-        ],
       ),
     );
   }

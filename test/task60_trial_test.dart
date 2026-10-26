@@ -83,6 +83,7 @@ void main() {
       final native = await bootTrialApp(tester);
       await emitState(tester, native, nativeState());
       await tester.pump(const Duration(seconds: 20));
+      await openFeature(tester, 'mock_location');
       await scrollTo(tester, find.byKey(const Key('share-location')));
       expect(tester.widget<SwitchListTile>(find.byKey(const Key('share-location'))).value, isFalse);
       expect(permissionRequests, 0);
@@ -94,6 +95,7 @@ void main() {
       fakeLocation();
       final native = await bootTrialApp(tester);
       await emitState(tester, native, nativeState());
+      await openFeature(tester, 'mock_location');
       await scrollTo(tester, find.byKey(const Key('share-location')));
       await tester.tap(find.byKey(const Key('share-location')));
       for (var i = 0; i < 6; i++) {
@@ -123,6 +125,7 @@ void main() {
       fakeLocation();
       final native = await bootTrialApp(tester);
       await emitState(tester, native, nativeState());
+      await openFeature(tester, 'mock_location');
       await scrollTo(tester, find.byKey(const Key('location-heartbeat')));
       String label() => tester.widget<Text>(find.byKey(const Key('location-heartbeat'))).data!;
       expect(label(), 'Location heartbeat: off.');
@@ -165,6 +168,7 @@ void main() {
       answer = PermissionStatus.denied;
       final native = await bootTrialApp(tester);
       await emitState(tester, native, nativeState());
+      await openFeature(tester, 'mock_location');
       await scrollTo(tester, find.byKey(const Key('share-location')));
       await tester.tap(find.byKey(const Key('share-location')));
       for (var i = 0; i < 4; i++) {

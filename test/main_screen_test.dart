@@ -29,6 +29,7 @@ void main() {
     expect(native.platformCalls, isNot(contains('SystemNavigator.pop')));
     expect(find.text('Device warning'), findsOneWidget, reason: 'still on the main screen');
 
+    await openFeature(tester, 'adb_enabled');
     await scrollTo(tester, find.byKey(_closeSetting));
     expect(tester.widget<SwitchListTile>(find.byKey(_closeSetting)).value, isFalse);
   });
@@ -49,6 +50,7 @@ void main() {
     final native = await bootTrialApp(tester);
     await emitState(tester, native, nativeState());
 
+    await openFeature(tester, 'adb_enabled');
     await scrollTo(tester, find.byKey(_closeSetting));
     await tester.tap(find.byKey(_closeSetting));
     await tester.pump();
@@ -63,7 +65,8 @@ void main() {
     expect(native.platformCalls, contains('SystemNavigator.pop'));
   });
 
-  testWidgets('main screen uses the results screen headings and names; clipboard Guarding is green', (tester) async {
+  testWidgets('the Clipboard Protection page shows Guarding in green; the results screen uses the shared '
+      'headings and names', (tester) async {
     final native = await bootTrialApp(tester);
     const reported = ['device_binding', 'mock_location', 'vpn', 'overlay', 'external_display', 'risky_app'];
     await emitState(tester, native, nativeState(detectors: {
@@ -75,24 +78,16 @@ void main() {
       'risky_app': nativeCheck('risky_app', 'UNKNOWN'),
     }));
 
-    // Clipboard card: "Guarding" in green, not the red used for findings.
+    // Clipboard page: "Guarding" in green, not the red used for findings.
+    await openFeature(tester, 'clipboard_protection');
     await scrollTo(tester, find.text('Guarding'));
     final guarding = tester.widget<Chip>(find.ancestor(of: find.text('Guarding'), matching: find.byType(Chip)));
     expect(guarding.backgroundColor, Colors.green);
+    await tester.pageBack();
+    await tester.pumpAndSettle();
 
-    // Main screen detector card: headings in the shared order, then names.
+    // Results screen: the shared headings and names.
     const headings = ['Device Integrity', 'Network Security', 'Privacy & Screen', 'Other'];
-    for (final heading in headings) {
-      await scrollTo(tester, find.text(heading));
-      expect(find.text(heading), findsOneWidget);
-    }
-    for (final id in reported) {
-      expect(find.text(RaspDetectorDescriptor.forId(id).title), findsOneWidget, reason: id);
-    }
-    expect(find.text('Security Check'), findsNothing);
-    expect(find.text('Privacy Screen'), findsNothing, reason: 'old heading text');
-
-    // Results screen: the same headings and names.
     await tester.tap(find.byTooltip('Detector results'));
     await tester.pumpAndSettle();
     expect(find.text('Detector results'), findsOneWidget);
@@ -100,11 +95,54 @@ void main() {
       await scrollTo(tester, find.text(heading));
       expect(find.text(heading), findsOneWidget);
     }
+    expect(find.text('Security Check'), findsNothing);
+    expect(find.text('Privacy Screen'), findsNothing, reason: 'old heading text');
     // Scrolling back up from the bottom, so bottom-most first.
     for (final id in reported.reversed) {
       final title = '${RaspDetectorDescriptor.forId(id).title}  ($id)';
       await tester.scrollUntilVisible(find.text(title), -200, scrollable: find.byType(Scrollable).first);
       expect(find.text(title), findsOneWidget);
     }
+  });
+
+  testWidgets('switching a feature restarts the session without wiping the clipboard again '
+      '(Android shows a "Copied" pop-up for every wipe)', (tester) async {
+    final native = await bootTrialApp(tester);
+    await emitState(tester, native, nativeState());
+    expect(native.methods.where((m) => m == 'clearClipboard'), hasLength(1), reason: 'once, when protection starts');
+
+    await openFeature(tester, 'vpn');
+    await tester.tap(find.text('Disable'));
+    await tester.pump();
+    await tester.pump();
+    await tester.tap(find.text('Enable'));
+    await tester.pump();
+    await tester.pump();
+    expect(native.argumentsOf('startLeanSession'), hasLength(3));
+    expect(native.methods.where((m) => m == 'clearClipboard'), hasLength(1));
+  });
+
+  testWidgets('the Clipboard Protection page copies, pastes and clears', (tester) async {
+    final native = await bootTrialApp(tester);
+    await emitState(tester, native, nativeState());
+    await openFeature(tester, 'clipboard_protection');
+
+    await scrollTo(tester, find.byKey(const Key('clipboard-copy')));
+    await tester.tap(find.byKey(const Key('clipboard-copy')));
+    await tester.pump();
+    expect(native.platformCalls, contains('Clipboard.setData'));
+
+    await tester.tap(find.byKey(const Key('clipboard-paste')));
+    await tester.pump();
+    await tester.pump();
+    expect(native.platformCalls, contains('Clipboard.getData'));
+    expect(find.text('Nothing to paste — the clipboard is empty.'), findsOneWidget);
+
+    final before = native.methods.where((m) => m == 'clearClipboard').length;
+    await tester.tap(find.byKey(const Key('clipboard-clear')));
+    await tester.pump();
+    await tester.pump();
+    expect(native.methods.where((m) => m == 'clearClipboard'), hasLength(before + 1));
+    expect(find.text('Clipboard wiped.'), findsOneWidget);
   });
 }
